@@ -69,6 +69,7 @@ class JobRunner:
         self._jobs: dict[str, Job] = {}
         self._order: list[str] = []
         self._lock = threading.RLock()
+        self._corr_locks: dict[str, threading.RLock] = {}
         self._wake = threading.Event()
         self._thread = threading.Thread(target=self._loop, name="job-runner", daemon=True)
         self._thread.start()
@@ -114,11 +115,20 @@ class JobRunner:
         with self._lock:
             job = self._jobs.get(jid)
             if job and job.status not in ("running",):
+                if job.status == "queued":
+                    job._cancel = True  # 关闭与 _next_queued 的竞态窗口
                 del self._jobs[jid]
                 self._order.remove(jid)
         if job and job.status != "running":
             import shutil
             shutil.rmtree(job.job_dir, ignore_errors=True)
+            # 清理本工具上传的输入副本（用户自选路径不动）
+            try:
+                inp = Path(job.input_path)
+                if inp.exists() and config.WORKSPACE_DIR in inp.parents:
+                    inp.unlink()
+            except OSError:
+                pass
             return True
         return False
 
@@ -149,6 +159,7 @@ class JobRunner:
     def _run_job(self, job: Job) -> None:
         job.status = "running"
         job.started_at = time.time()
+        job._stage_t0 = time.time()
         cfg = settings_mod.Settings.from_dict(job.settings)
         events.stage(f"任务开始：{job.name}", scope=job.id)
 
@@ -206,14 +217,15 @@ class JobRunner:
         tl_path = job.job_dir / "timeline.json"
         if not tl_path.exists():
             raise FileNotFoundError("timeline.json 缺失")
-
-        def progress(stage, frac, note=""):
-            pass
-
-        tl = self.engine.rerender(job.job_dir, moves,
-                                  settings_mod.Settings.from_dict(job.settings), progress)
-        job.result.update({
-            "tracks": tl["tracks"], "speakers": tl["speakers"],
-            "segments": tl["segments"], "audit": tl["audit"], "qc": tl["qc"]})
+        with self._lock:
+            lock = self._corr_locks.setdefault(jid, threading.RLock())
+        with lock:  # 同一任务的修正重渲染互斥（并发写 WAV 会损坏轨道）
+            def progress(stage, frac, note=""):
+                pass
+            tl = self.engine.rerender(job.job_dir, moves,
+                                      settings_mod.Settings.from_dict(job.settings), progress)
+            job.result.update({
+                "tracks": tl["tracks"], "speakers": tl["speakers"],
+                "segments": tl["segments"], "audit": tl["audit"], "qc": tl["qc"]})
         events.success(f"人工修正已应用（{len(moves)} 处改派，秒级重渲染）", scope=jid)
         return job.result

@@ -191,8 +191,10 @@ def download(url: str, dest: Path, expected_size: int | None = None,
             part = dest.with_suffix(dest.suffix + ".part")
             have = part.stat().st_size if part.exists() else 0
             if total and have >= total:
-                part.unlink()
-                have = 0
+                _sh.move(str(part), str(dest))  # 已完整：直接就位，勿整文件重下
+                if log_prefix:
+                    events.success(f"{log_prefix} 续传就位 {dest.name}（{have/1048576:.1f} MB）", scope="models")
+                return dest
             headers = {"User-Agent": _UA}
             if have > 0:
                 headers["Range"] = f"bytes={have}-"

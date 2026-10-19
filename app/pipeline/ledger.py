@@ -273,4 +273,4 @@ def verify_sum(track_files: list[Path], master_path: Path, sr: int) -> dict:
         mst = audio_io.resample(mst, mst_sr, sr)
     k = min(acc.shape[0], mst.shape[0])
     err = float(np.max(np.abs(acc[:k] - mst[:k])))
-    return {"verify_sum_max_abs_err": err, "pass": err < 1e-3}
+    return {"verify_sum_max_abs_err": err, "pass": err < 1e-3, "verify_pass": err < 1e-3}

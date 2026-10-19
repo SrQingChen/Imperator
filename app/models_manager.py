@@ -45,17 +45,23 @@ def clearvoice_installed() -> bool:
 
 
 def funasr_cache_installed() -> bool:
-    try:
-        from pathlib import Path as _P
-        home = _P.home() / ".cache" / "modelscope" / "hub" / "models" / "iic"
-        if not home.exists():
-            return False
-        for d in home.iterdir():
-            if "campplus" in d.name.lower() and any(d.rglob("*.pt")):
-                return True
-        return False
-    except Exception:
-        return False
+    """兼容 ModelScope 新旧两种缓存布局，权重扩展名 pt/bin 均认。"""
+    from pathlib import Path as _P
+    home = _P.home() / ".cache" / "modelscope"
+    cands = [
+        home / "hub" / "models" / "iic",           # 旧布局
+        home / "models",                            # 新布局（iic--speech_campplus-*）
+    ]
+    for base in cands:
+        if not base.exists():
+            continue
+        for d in base.iterdir():
+            if "campplus" not in d.name.lower():
+                continue
+            for pat in ("*.pt", "*.bin", "*.safetensors"):
+                if any(d.rglob(pat)):
+                    return True
+    return False
 
 
 def status() -> list[dict]:
@@ -77,12 +83,16 @@ def _set_dl(key: str, **kw) -> None:
 
 def ensure_audio_separator_model(name: str) -> None:
     """MSS 模型缺失时阻塞式确保（镜像路由与续传）；任务线程调用。
-    若 UI 已在下载同一模型则等待其完成。"""
+    若 UI 已在下载同一模型则等待其完成；检查与置位在同一锁窗口内（防 TOCTOU 双下载）。"""
     if mss.installed(name):
         return
     key = f"mss:{name}"
     with _state_lock:
-        cur = _downloading.get(key, {})
+        cur = dict(_downloading.get(key, {}))
+        if cur.get("status") != "running":
+            _downloading[key] = {"status": "running", "progress": 0.0, "done_mb": 0.0,
+                                 "total_mb": 0.0, "error": ""}
+            cur = {"status": "running"}
     if cur.get("status") == "running":
         import time as _t
         while True:
@@ -93,7 +103,6 @@ def ensure_audio_separator_model(name: str) -> None:
                     return
                 raise RuntimeError(f"模型 {name} 下载未成功：{cur.get('error') or cur.get('status')}")
             _t.sleep(1.0)
-    _set_dl(key, status="running", error="")
     total_files = len((mss.manifest_for(name) or {}).get("files", []))
 
     def cb(done: int, tot: int):

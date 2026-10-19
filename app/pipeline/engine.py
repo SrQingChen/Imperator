@@ -238,9 +238,9 @@ class Engine:
         if cfg.voiceprint_match:
             progress("cluster", 0.75, "声纹库匹配")
             dz.apply_voiceprints(res.clusters, voiceprint.list_all(), cfg.merge_threshold, audit)
-        spk_ids = sorted({c.speaker_id for c in res.clusters if c.duration > 0})
-        centroids = {c.speaker_id: c.centroid for c in res.clusters if c.duration > 0}
-        label_map = {c.speaker_id: c.name for c in res.clusters}
+        spk_ids = sorted({c.speaker_id for c in res.clusters if c.duration > 0 and c.speaker_id >= 0})
+        centroids = {c.speaker_id: c.centroid for c in res.clusters if c.duration > 0 and c.speaker_id >= 0}
+        label_map = {c.speaker_id: c.name for c in res.clusters if c.duration > 0 and c.speaker_id >= 0}
         progress("cluster", 1.0, f"最终 {len(spk_ids)} 个说话人")
 
         # ---- overlap
@@ -277,6 +277,21 @@ class Engine:
         _chk()
         progress("ledger", 0.1, "构建增益账本")
         items = overlap.merge_regions_into_segments(res, regions)
+        # 丢弃最终时长≈0 的说话人（其内容已被改派/未归属，避免输出空轨道）
+        est_dur: dict[int, float] = {sid: 0.0 for sid in spk_ids}
+        for it in items:
+            masks = it.get("masks") or {}
+            if it["kind"] == "speech" and it.get("speaker") in est_dur:
+                est_dur[it["speaker"]] += it["end"] - it["start"]
+            elif masks:
+                share = (it["end"] - it["start"]) / max(len(masks), 1)
+                for sid in masks:
+                    if sid in est_dur:
+                        est_dur[sid] += share
+        spk_ids = [sid for sid in spk_ids if est_dur.get(sid, 0.0) >= 0.1]
+        if not spk_ids:
+            raise RuntimeError("未发现任何说话人（全部人声未归属，请降低合并阈值 τ 或检查素材）")
+        label_map = {k: v for k, v in label_map.items() if k in spk_ids}
         gains = ledger.build_ctrl_gains(items, spk_ids, duration)
         progress("ledger", 0.3, "流式写轨（Σ 恒等校验中）")
 
@@ -433,6 +448,14 @@ class Engine:
         verify = ledger.verify_sum([job_dir / t["file"] for t in led.tracks],
                                    Path(tl["job"]["master_path"]), led.sr_out)
         led.qc.update(verify)
+        # 清理不再存在的说话人轨道（改派后轨数可能减少，遗留旧文件会误导下载）
+        keep = {t["file"] for t in led.tracks}
+        for stale in job_dir.glob("speaker_*.wav"):
+            if stale.name not in keep:
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
         tl["qc"] = led.qc
         tl["tracks"] = led.tracks
         tl["audit"] = tl.get("audit", []) + new_audit

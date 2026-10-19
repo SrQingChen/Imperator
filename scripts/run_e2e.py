@@ -63,14 +63,32 @@ def main() -> int:
     print(f"Σ 恒等断言：max|Σtracks − master| = {err:.3e}")
     ok &= err < 1e-3
 
-    # 说话人轨在 truth 静音区应为静音（A 说话人轨在 B 独占区间）
+    # 说话人轨在真值静音区的静音校验：B 独占区间 = plan_b 减去 plan_a/重叠/偶发
     meta = json.loads((media / "meta.json").read_text("utf-8"))
-    a_only = [(6, 10), (16, 19)]  # B 独占区间 → A 轨应静音
+    busy = list(meta["plan_a"]) + [tuple(meta["overlap"]), tuple(meta["outlier"])]
+
+    def b_only_intervals():
+        out = []
+        for s, e in meta["plan_b"]:
+            cur = [(s, e)]
+            for bs, be in busy:
+                nxt = []
+                for cs, ce in cur:
+                    if be <= cs or bs >= ce:
+                        nxt.append((cs, ce))
+                        continue
+                    if cs < bs:
+                        nxt.append((cs, min(ce, bs)))
+                    if ce > be:
+                        nxt.append((max(cs, be), ce))
+                cur = nxt
+            out += [(cs, ce) for cs, ce in cur if ce - cs >= 2.0]
+        return out
     a_track = next((job_dir / t["file"] for t in result["tracks"]
                     if t["key"].startswith("speaker")), None)
     if a_track:
         spk_files = sorted(job_dir.glob("speaker_*.wav"))
-        # 找出 A 对应哪条轨（按重叠能量）
+        # 找出 A 对应哪条轨（按与真值的内积）
         ta, _ = sf.read(str(media / "truth_a.wav"), dtype="float32")
         best, best_e = None, -1
         for p in spk_files:
@@ -84,7 +102,7 @@ def main() -> int:
         if best:
             x, _ = sf.read(str(best), dtype="float32", always_2d=True)
             mono = x.mean(axis=1)
-            for s, e in a_only:
+            for s, e in b_only_intervals():
                 i0, i1 = int(s * sr), int(e * sr)
                 peak = float(np.max(np.abs(mono[i0:i1]))) if i1 <= len(mono) else None
                 print(f"  B 独占区间 [{s},{e}]s A 轨峰值 = {peak}")

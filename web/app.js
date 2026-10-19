@@ -69,7 +69,8 @@ $("#btn-submit").onclick = async () => {
   const add = (k, v) => { if (v !== "" && v != null) fd.append(k, v); };
   add("tier", $("#opt-tier").value);
   add("outlier_mode", $("#opt-outlier").value);
-  add("merge_threshold", $("#opt-tau").value !== "0.62" ? $("#opt-tau").value : "");
+  const tauBase = String(state.settings.merge_threshold ?? 0.62);
+  if ($("#opt-tau").value !== tauBase) add("merge_threshold", $("#opt-tau").value);
   try {
     $("#btn-submit").disabled = true;
     const res = await fetch("/api/jobs", { method: "POST", body: fd });
