@@ -253,7 +253,6 @@ function drawTimeline(result) {
     ctx.fillStyle = SPK_COLORS[i % SPK_COLORS.length];
     ctx.fillText(sp.name.slice(0, 8), 4, top + i * rh + 9);
   });
-  ctx.fillStyle = "var(--other)";
   ctx.fillStyle = "#8a8f9a";
   ctx.fillText("other", 4, top + result.speakers.length * rh + 9);
   for (const seg of result.segments) {
@@ -460,10 +459,10 @@ async function loadVps() {
     const data = await api("/api/voiceprints");
     $("#vp-table tbody").innerHTML = data.voiceprints.map(v => `
       <tr><td><input type="text" value="${esc(v.name)}" onchange="vpUpdate('${v.id}', 'name', this.value)"></td>
-      <td>${v.dim || "—"}</td><td>${esc(v.note || "")}</td>
+      <td>${v.dim || "—"}</td>
+      <td>${esc(v.note || "")} <span class="muted">${v.id}</span></td>
       <td><input type="checkbox" ${v.enabled ? "checked" : ""} onchange="vpUpdate('${v.id}', 'enabled', this.checked)"></td>
-      <td><button onclick="vpDelete('${v.id}')">删除</button></td>
-      <td class="hidden-id" style="display:none">${v.id}</td></tr>`).join("") || '<tr><td colspan="5" class="muted">暂无声纹</td></tr>';
+      <td><button onclick="vpDelete('${v.id}')">删除</button></td></tr>`).join("") || '<tr><td colspan="5" class="muted">暂无声纹</td></tr>';
   } catch (e) { /* 忽略 */ }
 }
 window.vpUpdate = async (id, k, v) => {

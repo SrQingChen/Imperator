@@ -22,6 +22,8 @@ TIER_MODELS: dict[str, list[str]] = {
 _CHECKS_URL = ("https://raw.githubusercontent.com/TRvlvr/application_data/main/"
                "filelists/download_checks.json")
 _REPO_PREFIX = "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models"
+_APPDATA_PREFIX = "https://raw.githubusercontent.com/TRvlvr/application_data/main"
+_YAML_PREFIX = f"{_APPDATA_PREFIX}/mdx_model_data/mdx_c_configs"
 
 
 def model_dir() -> Path:
@@ -49,12 +51,12 @@ def iter_manifest() -> list[dict]:
     d = _load_checks()
     out: dict[str, dict] = {}
 
-    def _add(fname: str, companions: list[str] = []):
+    def _add(fname: str, url: str | None = None, companions: list[tuple[str, str]] = []):
         if not fname or fname in out:
             return
-        files = [{"name": fname, "url": f"{_REPO_PREFIX}/{fname}"}]
-        for c in companions:
-            files.append({"name": c, "url": f"{_REPO_PREFIX}/{c}"})
+        files = [{"name": fname, "url": url or f"{_REPO_PREFIX}/{fname}"}]
+        for cname, curl in companions:
+            files.append({"name": cname, "url": curl})
         out[fname] = {"name": fname, "files": files}
 
     for key in ("vr_download_list", "mdx_download_list", "demucs_download_list"):
@@ -63,12 +65,14 @@ def iter_manifest() -> list[dict]:
                 _add(val)
             elif isinstance(val, dict):
                 main = next(iter(val))
-                _add(main, [v for v in val.values() if v != main])
+                rest = [(k, v) for k, v in val.items() if k != main]
+                _add(main, val.get(main) if str(val.get(main)).startswith("http") else None, rest)
     for key in ("mdx23_download_list", "mdx23c_download_list", "roformer_download_list"):
         for display, val in (d.get(key) or {}).items():
             if isinstance(val, dict):
                 ckpt = next(iter(val))
-                _add(ckpt, list(val.values()))
+                yamls = [(y, f"{_YAML_PREFIX}/{y}") for y in val.values() if y != ckpt]
+                _add(ckpt, companions=yamls)
     return list(out.values())
 
 
@@ -122,6 +126,7 @@ class MssSeparator:
         from audio_separator.separator import Separator
         self.tier = tier
         self.model_name = tier_model_filename(tier)
+        self._output_dir = Path(output_dir) if output_dir else None
         kwargs: dict = {
             "model_file_dir": str(model_dir()),
             "output_format": "WAV",
@@ -138,15 +143,32 @@ class MssSeparator:
         self.sep.load_model(self.model_name)
 
     def separate(self, wav_path: str | Path) -> tuple[Path, Path]:
+        out_base = self._output_dir or Path(wav_path).resolve().parent
+        out_base.mkdir(parents=True, exist_ok=True)
+        for stale in out_base.glob("*(Vocals)*.wav"):
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+        for stale in out_base.glob("*(Instrumental)*.wav"):
+            try:
+                stale.unlink()
+            except OSError:
+                pass
         outs = self.sep.separate(str(wav_path))
+        # 0.47 只返回文件名（相对 output_dir）；0.16 返回完整路径——统一解析
+        resolved = []
+        for o in outs:
+            p = Path(o)
+            resolved.append(p if p.is_absolute() else out_base / p.name)
         vocals = inst = None
-        for p in outs:
-            low = str(p).lower()
+        for p in resolved:
+            low = p.name.lower()
             if "(vocals)" in low:
-                vocals = Path(p)
+                vocals = p
             elif "(instrumental)" in low or "(no vocals)" in low or "accompaniment" in low:
-                inst = Path(p)
+                inst = p
         if vocals is None or inst is None:
-            found = ", ".join(str(p) for p in outs)
+            found = ", ".join(p.name for p in resolved)
             raise RuntimeError(f"未能从 MSS 输出中识别 vocals/instrumental：{found}")
         return vocals, inst

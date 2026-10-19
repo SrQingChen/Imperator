@@ -1,6 +1,7 @@
 """模型注册表与预下载（运行时与 fetch_models.py 共用同一代码路径）。"""
 from __future__ import annotations
 
+import os
 import threading
 
 from . import config, events, network
@@ -160,18 +161,47 @@ def _dir_size_mb(p) -> float:
     return total / 1048576
 
 
+def ensure_clearvoice() -> None:
+    """确保 MossFormer2_SS_16K 权重就位：当前端点 → hf-mirror → 官方 的回退链。
+    引擎加载前调用（snapshot_download 幂等，已就位时瞬时返回）。"""
+    if clearvoice_installed():
+        return
+    from huggingface_hub import snapshot_download
+
+    attempts: list[str | None] = []
+    cur = os.environ.get("HF_ENDPOINT")
+    if cur:
+        attempts.append(cur)
+    if "https://hf-mirror.com" not in attempts:
+        attempts.append("https://hf-mirror.com")
+    if None not in attempts:
+        attempts.append(None)
+    last: Exception | None = None
+    for ep in attempts:
+        if ep:
+            os.environ["HF_ENDPOINT"] = ep
+        else:
+            os.environ.pop("HF_ENDPOINT", None)
+        try:
+            events.info(f"下载 MossFormer2_SS_16K（{ep or '官方源'}）", scope="models")
+            snapshot_download(repo_id="alibabasglab/MossFormer2_SS_16K",
+                              local_dir=str(config.CLEARVOICE_CKPT_DIR))
+            if clearvoice_installed():
+                return
+        except Exception as e:
+            last = e
+            events.warn(f"源 {ep or '官方'} 下载失败：{e}", scope="models")
+    raise RuntimeError(f"MossFormer2_SS_16K 全部下载源失败：{last}")
+
+
 def _download_clearvoice(key: str) -> None:
-    """clearvoice 权重：HF_ENDPOINT 生效后实例化触发官方下载；目录体积轮询显进度。"""
-    network.get_plan()
+    """UI 触发的后台下载：线程内跑 ensure_clearvoice，目录体积轮询显进度。"""
     done_flag = threading.Event()
     errs: list[Exception] = []
 
     def _load():
         try:
-            from . import config as _cfg
-            _cfg.ensure_torch()
-            from clearvoice import ClearVoice
-            ClearVoice(task="speech_separation", model_names=["MossFormer2_SS_16K"])
+            ensure_clearvoice()
         except Exception as e:
             errs.append(e)
         finally:
@@ -179,8 +209,6 @@ def _download_clearvoice(key: str) -> None:
 
     threading.Thread(target=_load, daemon=True).start()
     ckpt = config.CLEARVOICE_CKPT_DIR
-    events.info("开始下载 MossFormer2_SS_16K（alibabasglab/MossFormer2_SS_16K，"
-                "国内自动走 hf-mirror；进度按已落盘体积估算）", scope="models")
     last = -1.0
     while not done_flag.wait(1.5):
         sz = _dir_size_mb(ckpt) if ckpt.exists() else 0.0
@@ -189,6 +217,8 @@ def _download_clearvoice(key: str) -> None:
             last = sz
     if errs:
         raise errs[0]
+    if not clearvoice_installed():
+        raise RuntimeError("下载结束但权重缺失，请重试或手动放置")
     _set_dl(key, done_mb=round(_dir_size_mb(ckpt), 1), status="done", progress=1.0)
 
 

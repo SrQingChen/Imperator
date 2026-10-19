@@ -19,6 +19,7 @@ DEPS: list[tuple[str, str, str, bool]] = [
     ("soundfile", "soundfile", "WAV 读写", True),
     ("psutil", "psutil", "性能监控", True),
     ("imageio_ffmpeg", "imageio-ffmpeg", "自带 ffmpeg", False),
+    ("onnxruntime", "onnxruntime", "MDX/VR 推理运行时", True),
     ("torch", "torch", "深度学习运行时", True),
     ("silero_vad", "silero-vad", "语音活动检测", True),
     ("audio_separator", "audio-separator", "伴奏分离", True),

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import gc
 import json
+import os
 import shutil
 import threading
 import time
@@ -46,6 +47,19 @@ class Embedder:
         self.model = AutoModel(model="iic/speech_campplus_sv_zh-cn_16k-common",
                                device=device, disable_update=True, hub="ms")
 
+    @staticmethod
+    def _to_numpy(v) -> np.ndarray | None:
+        try:
+            import torch
+            if isinstance(v, torch.Tensor):
+                v = v.detach().float().cpu().numpy()
+        except Exception:
+            pass
+        try:
+            return np.asarray(v, dtype="float32").flatten()
+        except Exception:
+            return None
+
     def embed_path(self, wav_path: str) -> np.ndarray | None:
         try:
             res = self.model.generate(input=str(wav_path))
@@ -56,16 +70,13 @@ class Embedder:
         if isinstance(first, dict):
             for key in ("spk_embedding", "spk", "embedding"):
                 if key in first:
-                    v = np.asarray(first[key], dtype="float32").flatten()
-                    if v.size >= 64:
+                    v = self._to_numpy(first[key])
+                    if v is not None and v.size >= 64:
                         return v / (np.linalg.norm(v) + 1e-9)
             for v in first.values():  # 兜底：找第一个尺寸合适的浮点数组
-                try:
-                    arr = np.asarray(v, dtype="float32").flatten()
-                    if arr.size >= 64:
-                        return arr / (np.linalg.norm(arr) + 1e-9)
-                except Exception:
-                    continue
+                arr = self._to_numpy(v)
+                if arr is not None and arr.size >= 64:
+                    return arr / (np.linalg.norm(arr) + 1e-9)
         return None
 
 
@@ -89,7 +100,7 @@ class Engine:
             name = mss.tier_model_filename(tier)
             models_manager.ensure_audio_separator_model(name)
             events.info(f"加载 MSS 模型：{name}（档位 {tier}）", scope="engine")
-            self._mss = mss.MssSeparator(tier=tier)
+            self._mss = mss.MssSeparator(tier=tier, output_dir=config.TMP_DIR / "mss_out")
             self._mss_tier = tier
             return self._mss
 
@@ -118,7 +129,9 @@ class Engine:
     def ensure_separator(self) -> overlap.ClearVoiceSeparator:
         with self._lock:
             if self._sep is None:
-                events.info("加载 MossFormer2_SS_16K 重叠分离模型（首次将自动下载）…", scope="engine")
+                from .. import models_manager
+                models_manager.ensure_clearvoice()
+                events.info("加载 MossFormer2_SS_16K 重叠分离模型…", scope="engine")
                 self._sep = overlap.ClearVoiceSeparator()
             return self._sep
 
@@ -142,6 +155,7 @@ class Engine:
         job_dir.mkdir(parents=True, exist_ok=True)
         tmp = job_dir / "_tmp"
         tmp.mkdir(exist_ok=True)
+        os.chdir(config.DATA_DIR)  # clearvoice 以 CWD 相对路径找 checkpoints
 
         def _chk():
             if cancel():
@@ -247,7 +261,7 @@ class Engine:
             region_list = overlap.group_regions(triggered, res.windows)
             for ri, reg in enumerate(region_list):
                 _chk()
-                r = overlap.resolve_region(reg, (cfg.overlap_context, cfg.overlap_context),
+                r = overlap.resolve_region(reg, cfg.overlap_context,
                                            voc16, 16000, cv, embed_func, centroids,
                                            cfg.merge_threshold, tmp / "ov_input.wav")
                 regions.append(r)
@@ -255,8 +269,8 @@ class Engine:
                          f"区 {ri + 1}/{len(region_list)}：{r.kind}")
             if cfg.release_vram and config.get_device().has_nvidia:
                 self.release_separator()
-        progress("overlap", 1.0, f"重叠区 {sum(1 for r in regions if r.kind == 'overlap')} 个"
-                                f"（硬归属 {sum(1 for r in regions if r.kind == 'hard')}，"
+        progress("overlap", 1.0, f"真重叠区 {sum(1 for r in regions if r.kind == 'overlap')} 个"
+                                f"（单人确认 {sum(1 for r in regions if r.kind == 'speech')}，"
                                 f"未归属 {sum(1 for r in regions if r.kind == 'unknown')}）")
 
         # ---- ledger
@@ -310,9 +324,15 @@ class Engine:
         if mask_store:
             np.savez_compressed(job_dir / "masks.npz", **mask_store)
         spk_durs = {sid: 0.0 for sid in spk_ids}
-        for e in segs_out:
-            if e["kind"] == "speech" and e["speaker"] in spk_durs:
-                spk_durs[e["speaker"]] += e["end"] - e["start"]
+        for it in items:
+            masks = it.get("masks") or {}
+            if it["kind"] == "speech" and it.get("speaker") in spk_durs:
+                spk_durs[it["speaker"]] += it["end"] - it["start"]
+            elif masks:
+                share = (it["end"] - it["start"]) / max(len(masks), 1)
+                for sid in masks:
+                    if sid in spk_durs:
+                        spk_durs[sid] += share
         total_sp = sum(spk_durs.values()) + 1e-9
         speakers_out = [{
             "id": sid, "name": label_map.get(sid, f"说话人 {sid + 1}"),

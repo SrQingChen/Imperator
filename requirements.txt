@@ -12,6 +12,7 @@ scipy>=1.10
 soundfile>=0.12
 psutil>=5.9
 imageio-ffmpeg>=0.4.9      # 系统无 ffmpeg 时兜底
+onnxruntime>=1.17          # audio-separator 顶层依赖（MDX/VR 推理）
 silero-vad>=5.0
 audio-separator>=0.16
 funasr>=1.1

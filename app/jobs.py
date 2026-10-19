@@ -9,7 +9,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import config, events, settings as settings_mod
-from .pipeline import engine as engine_mod
 from .pipeline.engine import Cancelled, Engine
 
 STAGES: list[tuple[str, str, float]] = [

@@ -46,11 +46,14 @@ class ClearVoiceSeparator:
             arr = out["output"] if isinstance(out, dict) and "output" in out else out
             if isinstance(arr, torch.Tensor):
                 arr = arr.detach().cpu().numpy()
+            if isinstance(arr, (list, tuple)):
+                arr = np.asarray([np.asarray(x) for x in arr])
             arr = np.asarray(arr, dtype="float32").squeeze()
             if arr.ndim == 1:            # (T,) 单源（不应发生）
                 return [arr]
-            if arr.ndim == 2:            # (S, T) 或 (T, S)
-                arr = arr.T if arr.shape[0] < arr.shape[1] * 0.5 else arr
+            if arr.ndim == 2:            # (S, T) 或 (T, S)：S=2 很小、T 很大
+                if arr.shape[0] > arr.shape[1]:
+                    arr = arr.T
                 return [np.ascontiguousarray(arr[i]) for i in range(arr.shape[0])]
             if arr.ndim == 3:            # (B, S, T)
                 return [np.ascontiguousarray(arr[0, i]) for i in range(arr.shape[1])]
@@ -140,7 +143,7 @@ def _envelope_mask(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray
     return ea / denom, eb / denom
 
 
-def resolve_region(region: tuple[float, float], ctx: tuple[float, float],
+def resolve_region(region: tuple[float, float], ctx: float,
                     vocals16k: np.ndarray, sr16k: int,
                     separator: ClearVoiceSeparator, embed_func,
                     centroids: dict[int, np.ndarray], threshold: float,
@@ -209,32 +212,27 @@ def _hard_assign(stream: np.ndarray, i0: int, i1: int, s0: float, e0: float, sr1
     match = known or (_best_speaker(emb, centroids) if emb is not None else None)
     if match and match[0] >= threshold - 0.05:
         sid = match[1]
-        r = i1 - i0
-        rel0 = max(0, min(int(round((s0 - (i0 / sr16k)) * sr16k)), r))
-        rel1 = max(0, min(int(round((e0 - (i0 / sr16k)) * sr16k)), r))
-        mask = np.zeros(r, dtype="float32")
-        mask[rel0:rel1] = 1.0
-        return OverlapRegion(s0, e0, kind="hard", speakers=[sid],
-                             masks={sid: mask}, sims={sid: round(match[0], 3)})
+        # 单流命中 = 误触发/单人段：转为普通 speech 归属（走账本淡变，无掩码）
+        return OverlapRegion(s0, e0, kind="speech", speakers=[sid],
+                             sims={sid: round(match[0], 3)})
     return OverlapRegion(s0, e0, kind="unknown")
 
 
 def merge_regions_into_segments(res: dz.DiarizeResult, regions: list[OverlapRegion]) -> list[dict]:
-    """把重叠区结果叠加进段结构：overlap/hard 区覆盖原段，unknown 区强制进 other。
-
-    返回 ledger 所需的“时间线项”列表：
-      speech 项 {start,end,speaker}
-      overlap/hard 项 {start,end,kind,masks:{speaker: 16k 掩码}, base_i0}
+    """把区域结果叠加进段结构：
+    - speech 区（单流命中）→ 普通 speech 项（走淡变）
+    - overlap 区 → 软掩码项（m_a+m_b=1）
+    - unknown 区 → 强制进 other（无增益）
     """
     items: list[dict] = []
     covered: list[tuple[float, float, str, dict]] = []
     for reg in regions:
-        if reg.kind in ("skip",):
+        if reg.kind == "skip":
             continue
         covered.append((reg.start, reg.end, reg.kind,
                         {"masks": reg.masks, "sims": reg.sims, "speakers": reg.speakers}))
     for seg in res.segments:
-        # 段被区域覆盖 → 切碎为未覆盖子区间（保留 speech 部分）
+        # 段被区域覆盖 → 切碎为未覆盖子区间（保留原 speech 部分）
         cur = seg.start
         for rs, re_, kind, payload in covered:
             if re_ <= cur or rs >= seg.end:
@@ -248,7 +246,11 @@ def merge_regions_into_segments(res: dz.DiarizeResult, regions: list[OverlapRegi
             items.append({"start": cur, "end": seg.end, "speaker": seg.speaker,
                           "kind": "speech" if seg.speaker >= 0 else "unknown", "src_seg": seg.seg_id})
     for rs, re_, kind, payload in covered:
-        items.append({"start": rs, "end": re_, "kind": kind, "speaker": payload["speakers"][0]
-                      if payload["speakers"] else -1, **payload})
+        if kind == "speech":
+            items.append({"start": rs, "end": re_, "kind": "speech",
+                          "speaker": payload["speakers"][0] if payload["speakers"] else -1})
+        else:
+            items.append({"start": rs, "end": re_, "kind": kind, "speaker": payload["speakers"][0]
+                          if payload["speakers"] else -1, **payload})
     items.sort(key=lambda it: it["start"])
     return items

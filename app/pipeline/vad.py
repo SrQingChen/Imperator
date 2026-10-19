@@ -1,20 +1,39 @@
 """Silero VAD 封装。"""
 from __future__ import annotations
 
+import shutil
+import tempfile
+from pathlib import Path
+
 import numpy as np
+
+
+def _load_model(device: str):
+    """torch.jit.load 在 Windows 上无法打开含非 ASCII 字符的路径——复制到
+    纯 ASCII 临时目录再加载。"""
+    import torch
+    from silero_vad import load_silero_vad
+    import silero_vad as _pkg
+    src = Path(_pkg.__file__).resolve().parent / "data" / "silero_vad.jit"
+    try:
+        return load_silero_vad(device=device if device == "cuda" else None)
+    except Exception:
+        dst = Path(tempfile.gettempdir()) / "imperator_silero_vad.jit"
+        if not dst.exists():
+            shutil.copyfile(src, dst)
+        m = torch.jit.load(str(dst), map_location="cpu")
+        m.eval()
+        if device == "cuda" and torch.cuda.is_available():
+            m = m.to(device)
+        return m
 
 
 class Vad:
     def __init__(self, device: str = "cpu"):
         from .. import config as _cfg
         _cfg.ensure_torch()
-        import torch
-        from silero_vad import load_silero_vad
-        self._torch = torch
-        if device == "cuda" and torch.cuda.is_available():
-            self.model = load_silero_vad(device=device)
-        else:
-            self.model = load_silero_vad()
+        self._torch = __import__("torch")
+        self.model = _load_model(device)
 
     def segments(self, wav16k_mono: np.ndarray) -> list[tuple[float, float]]:
         """返回 [(start_s, end_s)]；音频须为 16k 单声道 float32。"""
