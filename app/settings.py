@@ -53,6 +53,27 @@ class Settings:
             errs.append("outlier_mode 非法")
         if self.mss_tier not in ("standard", "fast", "light", "skip"):
             errs.append("mss_tier 非法")
+        if self.output_format not in ("float32", "s16", "s24"):
+            errs.append("output_format 非法")
+        if self.output_sr not in (44100, 48000, "source"):
+            errs.append("output_sr 非法")
+        # 滑窗参数：非法值会让 sliding_windows 死循环/空转，必须硬校验
+        if self.window_seconds < 0.5:
+            errs.append("window_seconds 应 ≥ 0.5")
+        if not (0 < self.window_hop <= self.window_seconds):
+            errs.append("window_hop 应在 (0, window_seconds] 内")
+        if self.smoothing_window < 0 or self.hysteresis < 0:
+            errs.append("smoothing_window / hysteresis 应 ≥ 0")
+        if self.overlap_margin < 0 or self.overlap_context < 0:
+            errs.append("overlap_margin / overlap_context 应 ≥ 0")
+        if self.min_new_speaker_duration <= 0 or self.min_new_speaker_segments < 1:
+            errs.append("min_new_speaker_duration 应 > 0 且 min_new_speaker_segments ≥ 1")
+        if not (0 < self.auto_unknown_score < self.auto_merge_score < 1):
+            errs.append("自动模式分数应满足 0 < unknown分 < merge分 < 1")
+        if not (1 <= self.listen_port <= 65535):
+            errs.append("listen_port 应在 1~65535")
+        if not self.listen_host.strip():
+            errs.append("listen_host 不能为空")
         return errs
 
     def to_dict(self) -> dict:

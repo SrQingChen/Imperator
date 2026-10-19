@@ -237,7 +237,7 @@ class Engine:
         audit = outlier.run_outlier_stage(res, cfg)
         if cfg.voiceprint_match:
             progress("cluster", 0.75, "声纹库匹配")
-            dz.apply_voiceprints(res.clusters, voiceprint.list_all(), cfg.merge_threshold, audit)
+            dz.apply_voiceprints(res, voiceprint.list_all(), cfg.merge_threshold, audit)
         spk_ids = sorted({c.speaker_id for c in res.clusters if c.duration > 0 and c.speaker_id >= 0})
         centroids = {c.speaker_id: c.centroid for c in res.clusters if c.duration > 0 and c.speaker_id >= 0}
         label_map = {c.speaker_id: c.name for c in res.clusters if c.duration > 0 and c.speaker_id >= 0}

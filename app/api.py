@@ -241,7 +241,10 @@ def create_app() -> FastAPI:
 
     @app.post("/api/voiceprints/merge")
     def vp_merge(body: dict):
-        v = voiceprint.merge(body.get("dst", ""), body.get("src", ""))
+        try:
+            v = voiceprint.merge(body.get("dst", ""), body.get("src", ""))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
         if v is None:
             raise HTTPException(400, "合并失败（id 无效或相同）")
         return {"ok": True}

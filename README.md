@@ -14,7 +14,7 @@
 [![Platform Windows](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-0078D6?style=flat-square&logo=windows)](#)
 [![Release 1.0.0](https://img.shields.io/badge/Release-1.0.0-e8c97a?style=flat-square)](#)
 [![Models Mel-RoFormer · CAM++ · MossFormer2](https://img.shields.io/badge/%E6%A8%A1%E5%9E%8B-MelRoFormer%20%C2%B7%20CAM%2B%2B%20%C2%B7%20MossFormer2-c9a54e?style=flat-square)](#技术架构)
-[![镜像自动探测](https://img.shields.io/badge/%E5%9B%BD%E5%86%85-%E9%95%9C%E5%83%8F%E8%87%AA%E5%8A%A8%E5%88%87%E6%8D%A2-FF6A00?style=flat-square)](#环境与模型自动管理)
+[![镜像自动探测](https://img.shields.io/badge/%E5%9B%BD%E5%86%85-%E9%95%9C%E5%83%8F%E8%87%AA%E5%8A%A8%E5%88%87%E6%8D%A2-FF6A00?style=flat-square)](#技术架构)
 
 **分离Separation，正是岁主的权能。** 一个自托管、可配置、可审计的智能音轨分离器。
 
@@ -121,7 +121,7 @@ python scripts/fetch_models.py --all
 ## 🧭 能力边界（诚实声明）
 
 - 单声道、同性别、同音色、无任何先验的多人**同时**说话，是物理欠定问题——英白拉多会给出置信度、未归属轨与残差，**不会假装完美**。
-- 3 人以上同时重叠为实验性（归属主导说话人并打 `overlap_multi` 标记）。
+- 3 人以上同时重叠：分离模型按两人处理，多出的声音会进入最相似轨或未归属轨，并在时间线上以低置信度呈现。
 - BGM 含歌声时，原唱进入「未归属人声」轨，不会污染说话人轨。
 - 主导型重叠（两人音量悬殊）的检出率有限，UI 中以低置信度标示。
 - 取消任务在阶段边界生效（大模型推理不可中断），UI 有如实提示。

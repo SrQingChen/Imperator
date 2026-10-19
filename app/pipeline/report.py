@@ -1,9 +1,15 @@
-"""QC 报告与时间线导出：timeline.json / report.html。"""
+"""QC 报告与时间线导出：timeline.json / report.html（全部 HTML 转义防注入）。"""
 from __future__ import annotations
 
+import html
 import json
 import time
 from pathlib import Path
+
+
+def _e(x) -> str:
+    return html.escape(str(x if x is not None else ""), quote=True)
+
 
 _HTML_HEAD = """<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8">
 <title>英白拉多 · 分离报告</title>
@@ -43,24 +49,23 @@ def save_timeline(tl: dict, out_dir: Path) -> Path:
 def render_html(tl: dict) -> str:
     qc = tl.get("qc", {})
     rows_spk = "".join(
-        f"<tr><td>{s['name']}</td><td>{s['duration_s']:.1f}s</td><td>{s['share_pct']:.1f}%</td>"
-        f"<td>{'<br>'.join(s.get('flags', [])) or '—'}</td></tr>"
+        f"<tr><td>{_e(s['name'])}</td><td>{s['duration_s']:.1f}s</td><td>{s['share_pct']:.1f}%</td>"
+        f"<td>{_e('；'.join(s.get('flags', [])) or '—')}</td></tr>"
         for s in tl.get("speakers", []))
     rows_seg = "".join(
-        f"<tr><td>{s['start']:.2f} – {s['end']:.2f}</td><td>{s.get('label','—')}</td>"
-        f"<td>{s.get('kind','')}</td><td>{s.get('top1',0):.3f}</td><td>{s.get('margin',0):.3f}</td></tr>"
+        f"<tr><td>{s['start']:.2f} – {s['end']:.2f}</td><td>{_e(s.get('label','—'))}</td>"
+        f"<td>{_e(s.get('kind',''))}</td><td>{s.get('top1',0):.3f}</td><td>{s.get('margin',0):.3f}</td></tr>"
         for s in tl.get("segments", [])[:400])
     audit_html = "".join(
         f"<li><code>{time.strftime('%H:%M:%S', time.localtime(a.get('ts', 0)))}</code> "
-        f"<b>{a.get('action')}</b>：{a.get('detail')}</li>" for a in tl.get("audit", [])) or "<li>无</li>"
-    sum_pass = qc.get("sum_pass") and qc.get("verify_sum_max_abs_err") is not None \
-        and qc.get("verify_pass", True)
-    sum_cls = "ok" if sum_pass else "bad"
+        f"<b>{_e(a.get('action'))}</b>：{_e(a.get('detail'))}</li>" for a in tl.get("audit", [])) or "<li>无</li>"
+    passed = bool(qc.get("verify_pass", qc.get("sum_pass")))
+    sum_cls = "ok" if passed else "bad"
     tracks_rows = "".join(
-        f"<tr><td>{t['label']}</td><td><code>{t['file']}</code></td></tr>" for t in tl.get("tracks", []))
+        f"<tr><td>{_e(t['label'])}</td><td><code>{_e(t['file'])}</code></td></tr>" for t in tl.get("tracks", []))
     return f"""{_HTML_HEAD}
 <h1>英白拉多 Imperator · 分离报告</h1>
-<p class="muted">{tl['job'].get('name','')} · 时长 {tl['duration_s']:.1f}s · 采样率 {tl['sr_out']} Hz ·
+<p class="muted">{_e(tl['job'].get('name',''))} · 时长 {tl['duration_s']:.1f}s · 采样率 {tl['sr_out']} Hz ·
 生成于 {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(tl.get('generated_at', time.time())))}</p>
 <h2>输出契约</h2>
 <p>所有音轨（说话人 + BGM + 未归属 + 残差）逐样本相加 = 原始音频。
@@ -83,7 +88,7 @@ def render_html(tl: dict) -> str:
 </body></html>"""
 
 
-def save_html(html: str, out_dir: Path) -> Path:
+def save_html(html_text: str, out_dir: Path) -> Path:
     p = out_dir / "report.html"
-    p.write_text(html, "utf-8")
+    p.write_text(html_text, "utf-8")
     return p

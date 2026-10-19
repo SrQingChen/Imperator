@@ -65,6 +65,8 @@ class DiarizeResult:
 
 def sliding_windows(vad_segments: list[tuple[float, float]], total_dur: float,
                     win: float = 1.5, hop: float = 0.75, min_len: float = 0.4) -> list[Window]:
+    if win <= 0 or hop <= 0:
+        raise ValueError(f"滑窗参数非法：win={win}, hop={hop}（必须 > 0）")
     out: list[Window] = []
     idx = 0
     for s, e in vad_segments:
@@ -188,43 +190,61 @@ def segmentize(windows: list[Window], vad_segments: list[tuple[float, float]],
     return merged
 
 
-def apply_voiceprints(clusters: list[Cluster], library: list[dict], threshold: float,
+def apply_voiceprints(res: "DiarizeResult", library: list[dict], threshold: float,
                       audit: list[dict]) -> None:
-    """声纹库命名 + 同库条目聚类合并（同一真实说话人）。"""
+    """声纹库命名 + 同库条目聚类合并（同一真实说话人）。
+    簇 id 重排时必须同步重排 segments/windows（否则账本 KeyError / 归属旋转）。"""
     entries = [v for v in library if v.get("enabled", True) and v.get("embedding")]
     if not entries:
         return
-    matched: dict[int, tuple[dict, float]] = {}
+    clusters = res.clusters
+    # 1) 每簇找最佳库匹配（只考虑存活簇，死簇不参与合并/命名）
+    matched: dict[int, tuple[dict, float]] = {}   # id(cluster) -> (entry, sim)
     for c in clusters:
+        if c.speaker_id < 0 or c.duration <= 0:
+            continue
         best, bs = None, -1.0
         for v in entries:
             sim = _cos(c.centroid, np.asarray(v["embedding"], dtype="float32"))
             if sim > bs:
                 bs, best = sim, v
         if best is not None and bs >= threshold:
-            prev = matched.get(best["id"])
-            if prev is None or bs > prev[1]:
-                matched[best["id"]] = (best, bs)
-            # 记录每个聚类的最佳库匹配
-            c.flags.append(f"声纹库 {best['name']} sim={bs:.3f}")
-    for vid, (v, sim) in matched.items():
-        hits = [c for c in clusters if any(f.startswith(f"声纹库 {v['name']}") for f in c.flags)]
-        if len(hits) >= 2:  # 两个聚类命中同一条目 → 合并为同一说话人
+            matched[id(c)] = (best, bs)
+    if not matched:
+        return
+    # 2) 命中同一条目的多个簇 → 合并为同一 speaker_id（保留最大簇）
+    by_entry: dict[str, list[Cluster]] = {}
+    for c in clusters:
+        if id(c) in matched:
+            by_entry.setdefault(matched[id(c)][0]["id"], []).append(c)
+    for vid, hits in by_entry.items():
+        if len(hits) >= 2:
             keep = max(hits, key=lambda c: c.duration)
             for c in hits:
                 if c is not keep:
                     c.speaker_id = keep.speaker_id
             audit.append({"ts": time.time(), "action": "voiceprint_merge",
                           "detail": f"聚类 {[c.label for c in hits if c is not keep]} 并入 {keep.label}"
-                                    f"（同命中声纹库「{v['name']}」）"})
-        keep.name = v["name"]
-        audit.append({"ts": time.time(), "action": "voiceprint_name",
-                      "detail": f"{keep.label} 命中声纹库「{v['name']}」(sim={sim:.3f}) → 重命名"})
-    # 重排 speaker_id 使其连续
-    ids = sorted({c.speaker_id for c in clusters})
+                                    f"（同命中声纹库「{matched[id(keep)][0]['name']}」）"})
+    # 3) 命名
+    for c in clusters:
+        if id(c) in matched:
+            v, sim = matched[id(c)]
+            c.name = v["name"]
+            audit.append({"ts": time.time(), "action": "voiceprint_name",
+                          "detail": f"聚类 {c.label} 命中声纹库「{v['name']}」(sim={sim:.3f}) → 重命名"})
+    # 4) id 连续化：只重排存活簇（speaker_id≥0），死簇固定 -1；segments/windows 同步
+    live = [c for c in clusters if c.speaker_id >= 0]
+    ids = sorted({c.speaker_id for c in live})
     remap = {old: new for new, old in enumerate(ids)}
     for c in clusters:
-        c.speaker_id = remap[c.speaker_id]
+        c.speaker_id = remap.get(c.speaker_id, -1) if c.speaker_id >= 0 else -1
+    for w in res.windows:
+        if w.assigned in remap:
+            w.assigned = remap[w.assigned]
+    for s in res.segments:
+        if s.speaker in remap:
+            s.speaker = remap[s.speaker]
 
 
 def diarize(embs: np.ndarray, windows: list[Window], vad_segments: list[tuple[float, float]],

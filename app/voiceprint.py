@@ -37,12 +37,20 @@ def get(vid: str) -> dict | None:
         return next((v for v in _load() if v["id"] == vid), None)
 
 
+def _validate_embedding(embedding) -> np.ndarray:
+    arr = np.asarray(embedding, dtype="float32").flatten()
+    if arr.size < 64 or not np.all(np.isfinite(arr)):
+        raise ValueError(f"embedding 应为 ≥64 维的有限浮点向量（收到 {arr.size} 维）")
+    return arr
+
+
 def create(name: str, embedding, note: str = "") -> dict:
+    arr = _validate_embedding(embedding)
     with _lock:
         items = _load()
         v = {"id": uuid.uuid4().hex[:12], "name": name, "enabled": True,
-             "embedding": np.asarray(embedding, dtype="float32").tolist(),
-             "dim": int(np.asarray(embedding).shape[0]),
+             "embedding": arr.tolist(),
+             "dim": int(arr.shape[0]),
              "note": note, "created_at": time.time()}
         items.append(v)
         _save(items)
@@ -80,6 +88,8 @@ def merge(dst_id: str, src_id: str) -> dict | None:
         if dst is None or src is None or dst_id == src_id:
             return None
         e1, e2 = np.asarray(dst["embedding"], "float32"), np.asarray(src["embedding"], "float32")
+        if e1.shape != e2.shape:
+            raise ValueError(f"维度不一致：{e1.size} vs {e2.size}，无法合并")
         cen = (e1 + e2) / 2.0
         dst["embedding"] = (cen / (np.linalg.norm(cen) + 1e-9)).tolist()
         dst["note"] = (dst.get("note", "") + f"；合并自 {src['name']}").strip("；")
