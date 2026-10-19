@@ -1,0 +1,19 @@
+# 英白拉多 Imperator · 依赖清单
+# 版本于 2026-10-19 在 Windows / Python 3.10.11 实测安装通过（清华镜像 + PyTorch 官方源）
+# 说明：torch 的 CUDA 构建只在 download.pytorch.org 分发，国内用户安装 CUDA 版需：
+#   pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu128
+# CPU 版直接 pip install torch 即可（可走国内镜像）。
+
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+numpy>=1.24,<2
+scipy>=1.10
+soundfile>=0.12
+psutil>=5.9
+imageio-ffmpeg>=0.4.9      # 系统无 ffmpeg 时兜底
+silero-vad>=5.0
+audio-separator>=0.16
+funasr>=1.1
+clearvoice>=0.1.2
+# torch 由用户按硬件选择 CPU/CUDA 变体安装（见上）

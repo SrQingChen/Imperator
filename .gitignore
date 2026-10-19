@@ -1,0 +1,29 @@
+# 数据与运行时
+data/
+models/
+outputs/
+workspace/
+logs/
+tmp/
+test_media/
+clearvoice/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+
+# 打包与系统
+build/
+dist/
+*.spec.bak
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/

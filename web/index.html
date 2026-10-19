@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>英白拉多 Imperator · 智能音轨分离器</title>
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header id="topbar">
+  <div class="brand">
+    <img src="/icon.svg" alt="" class="logo">
+    <div>
+      <h1>英白拉多 <span class="latin">IMPERATOR</span></h1>
+      <p class="tagline">把混在一起的声音，分而治之 · BGM / 每位说话人 / 重叠语音</p>
+    </div>
+  </div>
+  <nav id="tabs">
+    <button data-tab="jobs" class="active">分离任务</button>
+    <button data-tab="settings">高级配置</button>
+    <button data-tab="models">模型与环境</button>
+    <button data-tab="monitor">性能监控</button>
+    <button data-tab="voiceprints">声纹库</button>
+    <button data-tab="about">关于</button>
+  </nav>
+  <div id="net-badge" class="net-badge" title="镜像状态">…</div>
+</header>
+
+<main>
+<!-- ============================== 分离任务 ============================== -->
+<section id="tab-jobs" class="tab active">
+  <div class="grid-2">
+    <div class="card" id="new-job-card">
+      <h2>新建任务</h2>
+      <div class="drop" id="drop">
+        <input type="file" id="file-input" accept="video/*,audio/*">
+        <p>拖拽视频 / 音频到此处，或点击选择文件</p>
+        <p class="muted">也可以直接填写服务器本地路径</p>
+      </div>
+      <div class="row">
+        <input id="path-input" placeholder="或输入本地绝对路径，如 E:\videos\talk.mp4" spellcheck="false">
+      </div>
+      <div class="row opts">
+        <label>伴奏分离
+          <select id="opt-tier">
+            <option value="">使用默认（设置页）</option>
+            <option value="standard">标准 · Mel-RoFormer</option>
+            <option value="fast">快速 · BS-RoFormer</option>
+            <option value="light">轻量(CPU) · MDX</option>
+            <option value="skip">跳过（纯人声输入）</option>
+          </select>
+        </label>
+        <label>偶发排除
+          <select id="opt-outlier">
+            <option value="">使用默认</option>
+            <option value="ratio">比例模式</option>
+            <option value="auto">自动模式</option>
+            <option value="off">关闭</option>
+          </select>
+        </label>
+        <label title="两个人声相似度达到该值即视为同一人">合并阈值 τ <span id="opt-tau-val"></span>
+          <input type="range" id="opt-tau" min="0.3" max="0.95" step="0.01" value="0.62">
+        </label>
+      </div>
+      <button id="btn-submit" class="primary">开始分离</button>
+      <p class="muted" id="submit-hint"></p>
+    </div>
+
+    <div class="card" id="queue-card">
+      <h2>任务队列</h2>
+      <div id="job-list" class="job-list"></div>
+    </div>
+  </div>
+
+  <div class="card hidden" id="result-card">
+    <div class="result-head">
+      <h2>结果 · <span id="result-name"></span></h2>
+      <div class="result-actions">
+        <button id="btn-sync-play">▶ 同步试听</button>
+        <button id="btn-sync-stop">■ 停止</button>
+        <a id="btn-report" href="#" target="_blank" class="btn">完整报告</a>
+        <button id="btn-apply-moves" class="primary" disabled>应用人工修正</button>
+      </div>
+    </div>
+    <div id="qc-strip" class="qc-strip"></div>
+    <div class="grid-2">
+      <div>
+        <h3>音轨（相加可精确还原原声）</h3>
+        <div id="track-list"></div>
+      </div>
+      <div>
+        <h3>说话人时间线 <span class="muted">（点击段落可改派）</span></h3>
+        <canvas id="timeline" height="140"></canvas>
+        <div id="seg-editor" class="seg-editor hidden">
+          <span id="seg-info"></span>
+          <select id="seg-target"></select>
+          <span class="muted">改派后点击「应用人工修正」将秒级重渲染（不重跑模型）</span>
+        </div>
+        <div id="speaker-cards"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>运行日志</h2>
+    <div id="log-console" class="console"></div>
+  </div>
+</section>
+
+<!-- ============================== 高级配置 ============================== -->
+<section id="tab-settings" class="tab">
+  <div class="card">
+    <h2>说话人与置信度</h2>
+    <div class="form-grid">
+      <label>合并置信度阈值 τ（两人声余弦相似度 ≥ 此值视为同一人）
+        <input type="number" id="s-merge_threshold" step="0.01" min="0.3" max="0.99">
+        <span class="muted">建议先在典型素材上试跑：误合并 → 调高；同一个人被拆开 → 调低</span>
+      </label>
+      <label>新说话人最小时长（秒）<input type="number" id="s-min_new_speaker_duration" step="0.5" min="1"></label>
+      <label>新说话人最少段数<input type="number" id="s-min_new_speaker_segments" step="1" min="1"></label>
+      <label>平滑窗（秒）<input type="number" id="s-smoothing_window" step="0.1" min="0"></label>
+      <label>切换迟滞<input type="number" id="s-hysteresis" step="0.01" min="0"></label>
+      <label>声纹滑窗长（秒）<input type="number" id="s-window_seconds" step="0.1" min="0.5"></label>
+      <label>滑窗步长（秒）<input type="number" id="s-window_hop" step="0.05" min="0.1"></label>
+    </div>
+  </div>
+  <div class="card">
+    <h2>偶发排除</h2>
+    <p class="muted">惊呼 / 咳嗽 / 短暂变声等会造成几秒钟「既不像自己也不像别人」的低置信度声音。偶发排除把这类声音并回最相似的说话人，而不是凭空多出一个「第四说话人」。</p>
+    <div class="form-grid">
+      <label>模式
+        <select id="s-outlier_mode">
+          <option value="ratio">比例模式（推荐）</option>
+          <option value="auto">自动模式（综合评分，建议先校准）</option>
+          <option value="off">关闭</option>
+        </select>
+      </label>
+      <label>占比阈值 %（说话人总时长占比低于此值时并入最相似者）
+        <input type="number" id="s-outlier_ratio_percent" step="0.5" min="0.1" max="50">
+      </label>
+      <label>自动模式·并入阈值分<input type="number" id="s-auto_merge_score" step="0.01" min="0.5" max="0.9"></label>
+      <label>自动模式·unknown 阈值分<input type="number" id="s-auto_unknown_score" step="0.01" min="0.1" max="0.5"></label>
+    </div>
+  </div>
+  <div class="card">
+    <h2>重叠语音</h2>
+    <div class="form-grid">
+      <label>歧义 margin（与第二候选差小于此值触发重叠检测）<input type="number" id="s-overlap_margin" step="0.01" min="0"></label>
+      <label>重叠处理上下文（秒）<input type="number" id="s-overlap_context" step="0.5" min="0"></label>
+    </div>
+  </div>
+  <div class="card">
+    <h2>输出与模型</h2>
+    <div class="form-grid">
+      <label>WAV 精度
+        <select id="s-output_format">
+          <option value="float32">float32（相加精确还原）</option>
+          <option value="s24">24-bit</option>
+          <option value="s16">16-bit</option>
+        </select>
+      </label>
+      <label>采样率
+        <select id="s-output_sr">
+          <option value="44100">44100 Hz</option>
+          <option value="48000">48000 Hz</option>
+          <option value="source">跟随源</option>
+        </select>
+      </label>
+      <label>伴奏分离档位
+        <select id="s-mss_tier">
+          <option value="standard">标准 · Mel-RoFormer</option>
+          <option value="fast">快速 · BS-RoFormer</option>
+          <option value="light">轻量(CPU) · MDX</option>
+          <option value="skip">跳过（纯人声）</option>
+        </select>
+      </label>
+      <label class="checkline"><input type="checkbox" id="s-release_vram"> 任务后释放显存（低显存建议开）</label>
+      <label class="checkline"><input type="checkbox" id="s-voiceprint_match"> 声纹库自动匹配命名</label>
+    </div>
+  </div>
+  <div class="card">
+    <h2>网络与服务</h2>
+    <div class="form-grid">
+      <label>镜像策略
+        <select id="s-mirror_mode">
+          <option value="auto">自动探测</option>
+          <option value="china">强制国内镜像</option>
+          <option value="direct">强制官方源</option>
+        </select>
+      </label>
+      <label>监听地址<input id="s-listen_host"></label>
+      <label>监听端口<input type="number" id="s-listen_port"></label>
+    </div>
+  </div>
+  <div class="sticky-actions">
+    <button id="btn-save-settings" class="primary">保存设置</button>
+    <span id="settings-msg"></span>
+  </div>
+</section>
+
+<!-- ============================== 模型与环境 ============================== -->
+<section id="tab-models" class="tab">
+  <div class="card">
+    <h2>网络与镜像</h2>
+    <div id="net-detail" class="muted">探测中…</div>
+    <button id="btn-net-probe">重新探测</button>
+  </div>
+  <div class="card">
+    <h2>Python 依赖</h2>
+    <p class="muted">缺失依赖可一键安装（自动使用所选镜像；CUDA 版 torch 走官方源，失败自动回退 CPU 版）。</p>
+    <table class="table" id="dep-table"><thead><tr><th>模块</th><th>用途</th><th>状态</th><th>版本</th></tr></thead><tbody></tbody></table>
+    <button id="btn-install-deps" class="primary">一键安装缺失依赖</button>
+    <pre id="install-log" class="console mini hidden"></pre>
+  </div>
+  <div class="card">
+    <h2>模型</h2>
+    <div id="model-list" class="model-list"></div>
+  </div>
+</section>
+
+<!-- ============================== 性能监控 ============================== -->
+<section id="tab-monitor" class="tab">
+  <div class="gauge-row">
+    <div class="gauge"><h3>CPU</h3><canvas data-hist="hist_cpu"></canvas><div class="val" id="g-cpu">—</div></div>
+    <div class="gauge"><h3>内存</h3><canvas data-hist="hist_ram"></canvas><div class="val" id="g-ram">—</div></div>
+    <div class="gauge"><h3>GPU 利用率</h3><canvas data-hist="hist_gpu"></canvas><div class="val" id="g-gpu">—</div></div>
+    <div class="gauge"><h3>显存</h3><canvas data-hist="hist_vram"></canvas><div class="val" id="g-vram">—</div></div>
+  </div>
+  <div class="card">
+    <h2>当前任务</h2>
+    <div id="monitor-job" class="muted">无运行中任务</div>
+  </div>
+</section>
+
+<!-- ============================== 声纹库 ============================== -->
+<section id="tab-voiceprints" class="tab">
+  <div class="card">
+    <h2>声纹库 <span class="muted">（跨任务同一人同名输出；本地存储，不上传）</span></h2>
+    <p class="muted">在任务结果的「说话人」卡片上点击「存入声纹库」即可收录。新任务中相似度 ≥ τ 的说话人会自动沿用名称。</p>
+    <table class="table" id="vp-table"><thead><tr><th>名称</th><th>维度</th><th>备注</th><th>启用</th><th>操作</th></tr></thead><tbody></tbody></table>
+    <div class="row">
+      <button id="btn-vp-export">导出声纹包</button>
+      <label class="btn">导入声纹包<input type="file" id="vp-import-file" accept="application/json" hidden></label>
+      <button id="btn-vp-merge">合并两条（按下方填写）</button>
+      <input id="vp-merge-ids" placeholder="目标id,来源id" class="mini-input">
+    </div>
+  </div>
+</section>
+
+<!-- ============================== 关于 ============================== -->
+<section id="tab-about" class="tab">
+  <div class="card">
+    <h2>英白拉多 Imperator</h2>
+    <p>把混在一起的声音<b>分而治之</b>：导入视频或音频，自动抽取音轨、剥离 BGM，再把每位说话人拆成独立音轨——两人同时说话的重叠段也会分别归属。所有音轨与源等长、无人声处静音，全部相加可精确还原原始声音。</p>
+    <h3>能力边界（诚实声明）</h3>
+    <ul>
+      <li>单声道、同性别、同音色、无任何先验的多人<b>同时</b>说话，是物理上的欠定问题：本工具会给出置信度与残差轨，而不是假装完美。</li>
+      <li>3 人以上同时重叠为实验性（会归属主导说话人并打标记）。</li>
+      <li>BGM 含歌声时，原唱进入「未归属人声」轨，不会污染说话人轨。</li>
+      <li>取消任务在阶段边界生效（大模型推理不可中断）。</li>
+    </ul>
+    <h3>命名与致敬</h3>
+    <p>项目名「英白拉多」是拉丁语 <b>Imperator</b> 的音译——古罗马士兵授予凯旋将军的称号，后成为皇帝头衔，词根 imperare 意为「命令」。取名灵感来自《鸣潮》中岁主英白拉多掌「分离」之权能。</p>
+    <p class="disclaimer">本项目仅为个人兴趣开发、仅受上述作品概念启发而命名，与库洛游戏（Kuro Games）及相关方没有任何关联、合作、授权或背书；《鸣潮》及其角色名称版权归其权利人所有。</p>
+    <h3>许可</h3>
+    <p>代码以 GPL-3.0 发布。所用开源组件与模型权重各有许可（MIT / Apache-2.0 等），详见 README。声纹属于生物特征数据，请仅收录你有权使用的声音，且一切数据只保存在本机。</p>
+  </div>
+</section>
+</main>
+
+<footer>英白拉多 Imperator · GPL-3.0 · SrQingChen</footer>
+<script src="/app.js"></script>
+</body>
+</html>

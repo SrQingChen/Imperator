@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
+  <!-- 英白拉多 Imperator · 月桂花环 + 分离波形 -->
+  <defs>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f0d68a"/>
+      <stop offset="1" stop-color="#c9a54e"/>
+    </linearGradient>
+  </defs>
+  <circle cx="60" cy="60" r="57" fill="#14161c" stroke="url(#gold)" stroke-width="2.5"/>
+  <!-- 月桂花环（左右对称枝叶） -->
+  <g fill="none" stroke="url(#gold)" stroke-width="2" stroke-linecap="round">
+    <path d="M28 78 C 20 62 22 44 34 32"/>
+    <path d="M92 78 C 100 62 98 44 86 32"/>
+  </g>
+  <g fill="url(#gold)" opacity="0.9">
+    <ellipse cx="26" cy="72" rx="5" ry="2.4" transform="rotate(52 26 72)"/>
+    <ellipse cx="25" cy="63" rx="5" ry="2.4" transform="rotate(66 25 63)"/>
+    <ellipse cx="26" cy="54" rx="5" ry="2.4" transform="rotate(78 26 54)"/>
+    <ellipse cx="29" cy="45" rx="5" ry="2.4" transform="rotate(92 29 45)"/>
+    <ellipse cx="34" cy="37" rx="5" ry="2.4" transform="rotate(112 34 37)"/>
+    <ellipse cx="94" cy="72" rx="5" ry="2.4" transform="rotate(-52 94 72)"/>
+    <ellipse cx="95" cy="63" rx="5" ry="2.4" transform="rotate(-66 95 63)"/>
+    <ellipse cx="94" cy="54" rx="5" ry="2.4" transform="rotate(-78 94 54)"/>
+    <ellipse cx="91" cy="45" rx="5" ry="2.4" transform="rotate(-92 91 45)"/>
+    <ellipse cx="86" cy="37" rx="5" ry="2.4" transform="rotate(-112 86 37)"/>
+  </g>
+  <!-- 中央：一根波形在「分离」处一分为二 -->
+  <g stroke-linecap="round" fill="none">
+    <!-- 汇聚主干 -->
+    <path d="M38 60 L52 60" stroke="url(#gold)" stroke-width="3"/>
+    <!-- 分裂点 -->
+    <circle cx="55" cy="60" r="2.6" fill="url(#gold)"/>
+    <!-- 上行流（说话人 A） -->
+    <path d="M58 57 C 62 50 66 50 70 47 C 74 44 76 44 80 44" stroke="#7fb3d8" stroke-width="2.4"/>
+    <!-- 下行流（说话人 B） -->
+    <path d="M58 63 C 62 70 66 70 70 73 C 74 76 76 76 80 76" stroke="#e8c97a" stroke-width="2.4"/>
+    <!-- 波形毛刺 -->
+    <g stroke="#7fb3d8" stroke-width="1.6">
+      <path d="M63 47 l0 -4"/><path d="M68 46 l0 -5"/><path d="M74 41 l0 -5"/>
+    </g>
+    <g stroke="#e8c97a" stroke-width="1.6">
+      <path d="M63 73 l0 4"/><path d="M68 74 l0 5"/><path d="M74 79 l0 5"/>
+    </g>
+    <g stroke="url(#gold)" stroke-width="1.6" opacity="0.8">
+      <path d="M41 60 l0 -3"/><path d="M45 60 l0 5"/><path d="M49 60 l0 -3"/>
+    </g>
+  </g>
+  <text x="60" y="103" text-anchor="middle" font-family="Georgia,serif" font-size="9"
+        letter-spacing="4" fill="#8f7c4a">IMPERATOR</text>
+</svg>
