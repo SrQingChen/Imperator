@@ -14,14 +14,18 @@ _downloading: dict[str, dict] = {}   # key -> {status, progress, done_mb, total_
 def _registry() -> list[dict]:
     """模型清单：key/用途/检查方式。"""
     items = []
+    seen: set[str] = set()
     for tier, cands in mss.TIER_MODELS.items():
         for name in cands:
-            if (mss.model_dir() / name).exists() or mss.manifest_for(name):
-                items.append({
-                    "key": f"mss:{name}", "name": name, "kind": "mss",
-                    "tier": tier, "installed": mss.installed(name),
-                    "source": "audio-separator 官方仓库（镜像加速）",
-                })
+            if name in seen:
+                continue
+            seen.add(name)
+            # 清单离线也不隐藏：始终展示默认档模型，缺失时可一键尝试下载
+            items.append({
+                "key": f"mss:{name}", "name": name, "kind": "mss",
+                "tier": tier, "installed": mss.installed(name),
+                "source": "audio-separator 官方仓库（镜像加速）",
+            })
     items.append({"key": "sep:MossFormer2_SS_16K", "name": "MossFormer2_SS_16K",
                   "kind": "overlap", "tier": "", "installed": clearvoice_installed(),
                   "source": "HuggingFace / ModelScope"})

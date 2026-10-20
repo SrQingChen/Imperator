@@ -58,6 +58,7 @@ class DiarizeResult:
     clusters: list[Cluster]
     segments: list[Segment]
     audit: list[dict] = field(default_factory=list)
+    vad_segments: list[tuple[float, float]] = field(default_factory=list)
 
     def next_seg_id(self) -> int:
         return (max((s.seg_id for s in self.segments), default=0)) + 1
@@ -177,10 +178,11 @@ def segmentize(windows: list[Window], vad_segments: list[tuple[float, float]],
                 top1=w.top1, top2=w.top2, margin=w.top1 - w.top2,
                 dur=r["end"] - r["start"], energy_db=w.energy_db))
     segments.sort(key=lambda x: x.start)
-    # 短段并入前段（同 VAD 段内）
+    # 短段并入前段：仅同说话人且紧邻（跨说话人吸收会抹掉快速轮换）
     merged: list[Segment] = []
     for seg in segments:
-        if merged and seg.dur < min_seg and seg.start - merged[-1].end < 0.3:
+        if (merged and seg.dur < min_seg and seg.start - merged[-1].end < 0.3
+                and merged[-1].speaker == seg.speaker):
             prev = merged[-1]
             prev.end, prev.dur = seg.end, seg.end - prev.start
         else:
@@ -250,11 +252,116 @@ def apply_voiceprints(res: "DiarizeResult", library: list[dict], threshold: floa
 def diarize(embs: np.ndarray, windows: list[Window], vad_segments: list[tuple[float, float]],
             threshold: float, smoothing_s: float, hop: float) -> DiarizeResult:
     labels = average_linkage_cluster(embs, threshold)
-    for w, lb in zip(windows, labels):
+    for i, (w, lb) in enumerate(zip(windows, labels)):
         w.label = int(lb)
+        w.emb = embs[i]  # 必须挂回窗口：置信度/outlier 评分都依赖它
     smooth_labels(windows, hop, smoothing_s)
     clusters = build_clusters(windows, embs)
     for w in windows:
         score_against(w, clusters)
     segments = segmentize(windows, vad_segments, clusters)
-    return DiarizeResult(windows=windows, clusters=clusters, segments=segments)
+    return DiarizeResult(windows=windows, clusters=clusters, segments=segments,
+                         vad_segments=list(vad_segments))
+
+
+def _norm(v: np.ndarray) -> np.ndarray:
+    return v / (np.linalg.norm(v) + 1e-9)
+
+
+def refine_clusters(res: DiarizeResult, embs: np.ndarray, threshold: float,
+                    max_speakers: int = 0) -> DiarizeResult:
+    """多说话人场景的二次精修：
+    1) 质心再指派：与自身质心相似度 < τ 的窗改派到 ≥τ 的最近质心；
+    2) 质心合并：两个簇质心 cos ≥ τ 视为同一人被拆开 → 合并（解决 10+ 人时的过度分裂）；
+    3) 可选硬上限：超过 max_speakers 时把最小簇并入最近邻。
+    重建 segments，保持 id 连续。"""
+    n = len(res.windows)
+    if n == 0:
+        return res
+    X = np.stack([_norm(np.asarray(embs[i], "float32")) for i in range(n)])
+    labels = np.array([w.assigned for w in res.windows], dtype=int)
+
+    def centroids_of(lbl: np.ndarray) -> dict[int, np.ndarray]:
+        ids = sorted(set(lbl.tolist()) - {-1})
+        out = {}
+        for i in ids:
+            m = lbl == i
+            if m.any():
+                out[i] = _norm(X[m].mean(axis=0))
+        return out
+
+    # 1) 质心再指派
+    for _ in range(2):
+        cents = centroids_of(labels)
+        if not cents:
+            break
+        ids = sorted(cents)
+        M = np.stack([cents[i] for i in ids])
+        sims = X @ M.T
+        changed = False
+        for k in range(n):
+            if labels[k] < 0:
+                continue
+            cur = ids.index(labels[k])
+            cur_sim = float(sims[k, cur])
+            best = int(np.argmax(sims[k]))
+            if cur_sim < threshold and float(sims[k, best]) >= threshold and ids[best] != labels[k]:
+                labels[k] = ids[best]
+                changed = True
+        if not changed:
+            break
+
+    # 2) 质心合并（迭代到无 ≥τ 的簇对）
+    while True:
+        cents = centroids_of(labels)
+        ids = sorted(cents)
+        if len(ids) < 2:
+            break
+        best = (-1.0, None, None)
+        for a in range(len(ids)):
+            for b in range(a + 1, len(ids)):
+                s = float(np.dot(cents[ids[a]], cents[ids[b]]))
+                if s > best[0]:
+                    best = (s, ids[a], ids[b])
+        if best[0] < threshold:
+            break
+        labels[labels == best[2]] = best[1]
+
+    # 3) 硬上限：最小簇并入最近簇
+    if max_speakers and max_speakers > 0:
+        while len(set(labels.tolist()) - {-1}) > max_speakers:
+            cents = centroids_of(labels)
+            ids = sorted(cents)
+            counts = {i: int((labels == i).sum()) for i in ids}
+            small = min(ids, key=lambda i: counts[i])
+            others = [i for i in ids if i != small]
+            nearest = max(others, key=lambda o: float(np.dot(cents[small], cents[o])))
+            labels[labels == small] = nearest
+
+    return _rebuild(res, labels, embs)
+
+
+def _rebuild(res: DiarizeResult, labels: np.ndarray, embs: np.ndarray) -> DiarizeResult:
+    ids = sorted(set(labels.tolist()) - {-1})
+    remap = {old: new for new, old in enumerate(ids)}
+    windows = res.windows
+    clusters: list[Cluster] = []
+    for old in ids:
+        mem = [i for i in range(len(labels)) if labels[i] == old]
+        vecs = np.stack([embs[i] for i in mem])
+        cen = _norm(vecs.mean(axis=0))
+        dur = sum(windows[i].end - windows[i].start for i in mem)
+        c = Cluster(label=remap[old] + 1, centroid=cen, members=mem,
+                    speaker_id=remap[old], duration=dur)
+        c.name = f"说话人 {remap[old] + 1}"
+        clusters.append(c)
+    by_id = {c.speaker_id: c for c in clusters}
+    for i, w in enumerate(windows):
+        old = int(labels[i])
+        w.assigned = remap.get(old, -1)
+        w.label = by_id[w.assigned].label if w.assigned >= 0 else -1
+    for w in windows:
+        score_against(w, clusters)
+    segments = segmentize(windows, getattr(res, "vad_segments", []), clusters)
+    return DiarizeResult(windows=windows, clusters=clusters, segments=segments,
+                         audit=res.audit, vad_segments=getattr(res, "vad_segments", []))

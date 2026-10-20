@@ -26,7 +26,7 @@ def main() -> None:
     _ensure_utf8_console()
     parser = argparse.ArgumentParser(description="英白拉多 Imperator · 智能音轨分离器")
     parser.add_argument("--host", default=None, help="监听地址（默认取设置，初始 127.0.0.1）")
-    parser.add_argument("--port", default=None, type=int, help="监听端口（默认取设置，初始 8765）")
+    parser.add_argument("--port", default=None, type=int, help="监听端口（默认取设置，初始 8766）")
     parser.add_argument("--data-dir", default=None, help="数据目录（模型/输出/日志）")
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     parser.add_argument("--log-level", default="warning", help="uvicorn 日志级别")

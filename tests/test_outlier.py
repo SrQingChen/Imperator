@@ -74,3 +74,31 @@ def test_auto_mode_unknown_for_orphan():
     cfg = Settings(outlier_mode="auto")
     audit = outlier.run_outlier_stage(res, cfg)
     assert res.segments[2].kind in ("unknown",) or res.segments[2].speaker >= 0
+
+
+def test_low_share_but_long_speaker_kept():
+    """长视频里台词少的配角：占比 <4% 但总时长超过绝对上限 → 不得被偶发排除吞掉。"""
+    res = _mk_result()
+    # 把"小簇"改成 30 秒、分 3 段的合法配角（占比仍低于 4%）
+    res.segments[2].dur = 10.0
+    res.segments[2].end = res.segments[2].start + 10.0
+    for k in range(2):
+        s = dz.Segment(start=40.0 + k * 11, end=50.0 + k * 11, speaker=2,
+                       top1=0.9, top2=0.2, dur=10.0, energy_db=-20.0)
+        s.seg_id = len(res.segments)
+        res.segments.append(s)
+    res.clusters[2].duration = 30.0
+    cfg = Settings(outlier_mode="ratio", outlier_ratio_percent=4.0,
+                   outlier_max_seconds=8.0, min_new_speaker_duration=5.0,
+                   min_new_speaker_segments=1)  # 测试夹具每簇仅 1 段，放宽段数门槛
+    outlier.run_outlier_stage(res, cfg)
+    assert any(s.speaker == 2 for s in res.segments[2:]), "时长 30s 的配角不应因占比低被合并"
+
+
+def test_short_outlier_still_merged():
+    """短促异响（0.6s）仍应被比例模式并入最相似者。"""
+    res = _mk_result()
+    cfg = Settings(outlier_mode="ratio", outlier_ratio_percent=4.0,
+                   outlier_max_seconds=8.0)
+    outlier.run_outlier_stage(res, cfg)
+    assert res.segments[2].speaker == 0

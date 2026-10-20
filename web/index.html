@@ -123,6 +123,10 @@
       <label>切换迟滞<input type="number" id="s-hysteresis" step="0.01" min="0"></label>
       <label>声纹滑窗长（秒）<input type="number" id="s-window_seconds" step="0.1" min="0.5"></label>
       <label>滑窗步长（秒）<input type="number" id="s-window_hop" step="0.05" min="0.1"></label>
+      <label>说话人硬上限（0=不限制）
+        <input type="number" id="s-max_speakers" step="1" min="0">
+        <span class="muted">长视频有十几位说话人时保持 0；只有想防「过度分裂」时才填上限</span>
+      </label>
     </div>
   </div>
   <div class="card">
@@ -139,13 +143,24 @@
       <label>占比阈值 %（说话人总时长占比低于此值时并入最相似者）
         <input type="number" id="s-outlier_ratio_percent" step="0.5" min="0.1" max="50">
       </label>
+      <label>占比模式的绝对时长上限（秒）
+        <input type="number" id="s-outlier_max_seconds" step="0.5" min="0">
+        <span class="muted">必须「占比低且总时长短」才视为偶发；长视频里台词少的配角不会被吞</span>
+      </label>
       <label>自动模式·并入阈值分<input type="number" id="s-auto_merge_score" step="0.01" min="0.5" max="0.9"></label>
       <label>自动模式·unknown 阈值分<input type="number" id="s-auto_unknown_score" step="0.01" min="0.1" max="0.5"></label>
     </div>
   </div>
   <div class="card">
     <h2>重叠语音</h2>
+    <p class="muted">每个重叠区先做双人盲分离；若其中一路仍像「混合体」，会对它再拆一次以找出第三人（实验性）。</p>
     <div class="form-grid">
+      <label>单区最多分离人数
+        <select id="s-max_overlap_speakers">
+          <option value="2">2 人（最快）</option>
+          <option value="3">3 人（推荐，递归拆第三人）</option>
+        </select>
+      </label>
       <label>歧义 margin（与第二候选差小于此值触发重叠检测）<input type="number" id="s-overlap_margin" step="0.01" min="0"></label>
       <label>重叠处理上下文（秒）<input type="number" id="s-overlap_context" step="0.5" min="0"></label>
     </div>
@@ -256,7 +271,8 @@
     <h3>能力边界（诚实声明）</h3>
     <ul>
       <li>单声道、同性别、同音色、无任何先验的多人<b>同时</b>说话，是物理上的欠定问题：本工具会给出置信度与残差轨，而不是假装完美。</li>
-      <li>3 人以上同时重叠：分离模型按两人处理，多出的声音进入最相似轨或未归属轨，时间线上以低置信度呈现。</li>
+      <li>重叠分离默认最多处理 3 人同时说话（第 3 人由递归拆分得到，实验性）；再多人重叠会进入最相似轨或未归属轨。</li>
+      <li>十余人分散说话的素材可以逐人分轨（说话人数量不限）；同时说话的段数越多、音色越接近，越需要在「高级配置」里校准阈值 τ。</li>
       <li>BGM 含歌声时，原唱进入「未归属人声」轨，不会污染说话人轨。</li>
       <li>取消任务在阶段边界生效（大模型推理不可中断）。</li>
     </ul>

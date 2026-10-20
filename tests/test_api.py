@@ -10,16 +10,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("IMPERATOR_DATA_DIR", str(tmp_path))
-    # 重新加载 config 以使用临时数据目录
+    # 保存原始 app 模块，测试后恢复，避免污染后续测试的数据目录
+    saved = {k: v for k, v in sys.modules.items() if k.startswith("app")}
     for mod in list(sys.modules):
         if mod.startswith("app"):
             del sys.modules[mod]
     from fastapi.testclient import TestClient
     from app.api import create_app
-    # 重建 app.config 指向的目录由模块导入时创建
     app = create_app()
-    with TestClient(app) as c:
-        yield c
+    try:
+        with TestClient(app) as c:
+            yield c
+    finally:
+        for mod in list(sys.modules):
+            if mod.startswith("app"):
+                del sys.modules[mod]
+        sys.modules.update(saved)
 
 
 def test_health_and_system(client):

@@ -67,10 +67,12 @@ def cluster_level(res: dz.DiarizeResult, cfg, audit: list[dict]) -> None:
         return
     total_dur = sum(c.duration for c in res.clusters) + 1e-9
     floor = cfg.merge_threshold - 0.05
-    # 按规模升序处理小簇
+    max_abs = float(getattr(cfg, "outlier_max_seconds", 8.0))
+    # 候选偶发簇：占比低于阈值「且」绝对时长短（长视频里合法的少话者不会被 4% 规则吞掉），
+    # 或时长低于新说话人证据下限
     small = [c for c in res.clusters
-             if (c.duration / total_dur * 100 < cfg.outlier_ratio_percent
-                 or c.duration < cfg.min_new_speaker_duration)]
+             if (c.duration / total_dur * 100 < cfg.outlier_ratio_percent and c.duration <= max_abs)
+             or c.duration < cfg.min_new_speaker_duration]
     for c in sorted(small, key=lambda c: c.duration):
         others = [o for o in res.clusters if o.speaker_id != c.speaker_id and o.duration > c.duration]
         if not others:

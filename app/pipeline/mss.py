@@ -39,15 +39,26 @@ def _checks_path() -> Path:
 def _load_checks() -> dict:
     p = _checks_path()
     if not p.exists():
-        network.download(_CHECKS_URL, p, log_prefix="模型清单")
+        try:
+            network.download(_CHECKS_URL, p, log_prefix="模型清单")
+        except Exception as e:
+            events.warn(f"模型清单不可用（离线或不稳定网络）：{e}", scope="models")
+            return {}
     try:
         return json.loads(p.read_text("utf-8"))
     except Exception:
         return {}
 
 
+_MANIFEST_CACHE: dict = {"mtime": None, "data": []}
+
+
 def iter_manifest() -> list[dict]:
     """[{name, files:[{name,url}]}]——覆盖 VR/MDX/Demucs/MDXC/Roformer 全部公开模型。"""
+    p = _checks_path()
+    mtime = p.stat().st_mtime if p.exists() else None
+    if _MANIFEST_CACHE["mtime"] == mtime and _MANIFEST_CACHE["data"]:
+        return _MANIFEST_CACHE["data"]
     d = _load_checks()
     out: dict[str, dict] = {}
 
@@ -73,7 +84,9 @@ def iter_manifest() -> list[dict]:
                 ckpt = next(iter(val))
                 yamls = [(y, f"{_YAML_PREFIX}/{y}") for y in val.values() if y != ckpt]
                 _add(ckpt, companions=yamls)
-    return list(out.values())
+    result = list(out.values())
+    _MANIFEST_CACHE.update(mtime=mtime, data=result)
+    return result
 
 
 def manifest_for(name: str) -> dict | None:

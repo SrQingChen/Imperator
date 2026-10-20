@@ -38,6 +38,9 @@ p{margin:6px 0}
 .net-badge.direct{color:var(--info);border-color:var(--info)}
 
 main{padding:20px 24px;max-width:1280px;margin:0 auto}
+.tab{display:none}
+.tab.active{display:block;animation:fadeIn .18s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 footer{text-align:center;color:var(--muted);padding:24px;font-size:12px}
 
 /* ---------- 卡片与布局 ---------- */

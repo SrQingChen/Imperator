@@ -233,7 +233,9 @@ class Engine:
         progress("cluster", 0.2, f"凝聚聚类（τ={cfg.merge_threshold:.2f}）")
         res = dz.diarize(emb_matrix, windows_kept, vad_segs,
                          cfg.merge_threshold, cfg.smoothing_window, cfg.window_hop)
-        progress("cluster", 0.5, f"{len(res.clusters)} 个候选说话人")
+        progress("cluster", 0.4, f"{len(res.clusters)} 个候选说话人，精修中")
+        res = dz.refine_clusters(res, emb_matrix, cfg.merge_threshold, cfg.max_speakers)
+        progress("cluster", 0.5, f"精修后 {len([c for c in res.clusters if c.speaker_id >= 0])} 个候选说话人")
         audit = outlier.run_outlier_stage(res, cfg)
         if cfg.voiceprint_match:
             progress("cluster", 0.75, "声纹库匹配")
@@ -252,25 +254,35 @@ class Engine:
             cv = self.ensure_separator()
             _cnt = [0]
 
-            def embed_func(stream: np.ndarray, base_path, tag: int):
-                p = tmp / f"ov_{_cnt[0]}_{tag}.wav"
+            def sep_fn(audio: np.ndarray):
+                p = tmp / f"ov_in_{_cnt[0]}.wav"
                 _cnt[0] += 1
-                sf.write(str(p), np.ascontiguousarray(stream, "float32"), 16000)
+                sf.write(str(p), np.ascontiguousarray(audio, "float32"), 16000)
+                return cv.separate(str(p))
+
+            def embed_func(audio: np.ndarray, tag: int):
+                p = tmp / f"ov_emb_{_cnt[0]}_{tag}.wav"
+                _cnt[0] += 1
+                sf.write(str(p), np.ascontiguousarray(audio, "float32"), 16000)
                 return emb.embed_path(p)
 
             region_list = overlap.group_regions(triggered, res.windows)
             for ri, reg in enumerate(region_list):
                 _chk()
                 r = overlap.resolve_region(reg, cfg.overlap_context,
-                                           voc16, 16000, cv, embed_func, centroids,
-                                           cfg.merge_threshold, tmp / "ov_input.wav")
+                                           voc16, 16000, sep_fn, embed_func, centroids,
+                                           cfg.merge_threshold, cfg.max_overlap_speakers)
                 regions.append(r)
+                note = r.kind
+                if r.kind == "overlap":
+                    note += f"（{len(r.speakers)} 人）"
                 progress("overlap", (ri + 1) / len(region_list),
-                         f"区 {ri + 1}/{len(region_list)}：{r.kind}")
+                         f"区 {ri + 1}/{len(region_list)}：{note}")
             if cfg.release_vram and config.get_device().has_nvidia:
                 self.release_separator()
         progress("overlap", 1.0, f"真重叠区 {sum(1 for r in regions if r.kind == 'overlap')} 个"
-                                f"（单人确认 {sum(1 for r in regions if r.kind == 'speech')}，"
+                                f"（其中多人区 {sum(1 for r in regions if len(r.speakers) >= 3)} 个，"
+                                f"单人确认 {sum(1 for r in regions if r.kind == 'speech')}，"
                                 f"未归属 {sum(1 for r in regions if r.kind == 'unknown')}）")
 
         # ---- ledger

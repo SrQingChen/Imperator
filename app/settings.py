@@ -30,6 +30,10 @@ class Settings:
     # 重叠
     overlap_margin: float = 0.06
     overlap_context: float = 1.5           # 重叠处理上下文（秒）
+    max_overlap_speakers: int = 3          # 单区间最多分离人数（2=仅两人；3=递归拆分第三人）
+    # 多人场景
+    max_speakers: int = 0                  # 硬上限；0=不限制（十几个说话人的长视频保持 0）
+    outlier_max_seconds: float = 8.0       # 占比模式的绝对时长上限：长视频里合法的少话者不被吞
     # 输出
     output_format: Literal["float32", "s16", "s24"] = "float32"
     output_sr: Literal[44100, 48000, "source"] = 44100
@@ -41,7 +45,7 @@ class Settings:
     # 网络 / 服务
     mirror_mode: Literal["auto", "china", "direct"] = "auto"
     listen_host: str = "127.0.0.1"
-    listen_port: int = 8765
+    listen_port: int = 8766
 
     def validate(self) -> list[str]:
         errs = []
@@ -66,6 +70,12 @@ class Settings:
             errs.append("smoothing_window / hysteresis 应 ≥ 0")
         if self.overlap_margin < 0 or self.overlap_context < 0:
             errs.append("overlap_margin / overlap_context 应 ≥ 0")
+        if not (2 <= self.max_overlap_speakers <= 4):
+            errs.append("max_overlap_speakers 应在 2~4")
+        if self.max_speakers < 0:
+            errs.append("max_speakers 应 ≥ 0（0=不限制）")
+        if self.outlier_max_seconds < 0:
+            errs.append("outlier_max_seconds 应 ≥ 0")
         if self.min_new_speaker_duration <= 0 or self.min_new_speaker_segments < 1:
             errs.append("min_new_speaker_duration 应 > 0 且 min_new_speaker_segments ≥ 1")
         if not (0 < self.auto_unknown_score < self.auto_merge_score < 1):
@@ -93,7 +103,12 @@ def load() -> Settings:
     with _lock:
         if config.CONFIG_JSON.exists():
             try:
-                return Settings.from_dict(json.loads(config.CONFIG_JSON.read_text("utf-8")))
+                raw = json.loads(config.CONFIG_JSON.read_text("utf-8"))
+                if raw.get("listen_port") == 8765:  # 旧默认与青梭冲突，自动迁移
+                    raw["listen_port"] = 8766
+                    config.CONFIG_JSON.write_text(
+                        json.dumps(raw, ensure_ascii=False, indent=2), "utf-8")
+                return Settings.from_dict(raw)
             except Exception:
                 pass
         return Settings()
