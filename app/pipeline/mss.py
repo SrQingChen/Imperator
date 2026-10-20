@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 import shutil
+import threading
 import time
 from pathlib import Path
 
@@ -222,16 +223,57 @@ def _read_exact(path: str | Path, frames: int, channels: int) -> np.ndarray:
     return x.astype("float32", copy=False)
 
 
+def _gpu_snapshot() -> str:
+    import subprocess
+    smi = shutil.which("nvidia-smi")
+    if not smi:
+        return ""
+    try:
+        p = subprocess.run([smi, "--query-gpu=utilization.gpu,memory.used",
+                            "--format=csv,noheader,nounits"],
+                           capture_output=True, text=True, timeout=4,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        parts = [x.strip() for x in p.stdout.strip().splitlines()[0].split(",")]
+        return f"，GPU {parts[0]}%/{parts[1]}MB"
+    except Exception:
+        return ""
+
+
+def _heartbeat_start(label: str, interval: float = 5.0) -> threading.Event:
+    """模型加载/长步骤心跳：每 5 秒报告耗时、RSS、GPU，卡住时一眼能看出来。"""
+    stop = threading.Event()
+
+    def run():
+        t0 = time.time()
+        while not stop.wait(interval):
+            try:
+                rss = psutil.Process().memory_info().rss / 2**20
+                events.info(f"{label}… 已用 {time.time()-t0:.0f}s，RSS {rss:.0f}MB"
+                            f"{_gpu_snapshot()}", scope="engine")
+            except Exception:
+                pass
+
+    threading.Thread(target=run, name="mss-heartbeat", daemon=True).start()
+    return stop
+
+
 class MssSeparator:
     """薄封装：构造即加载模型，separate() 输出 vocals/instrumental 路径。"""
 
     def __init__(self, tier: str = "standard", output_dir: str | Path | None = None):
         from .. import config as _cfg
+        t0 = time.time()
         _cfg.ensure_torch()
         from audio_separator.separator import Separator
         self.tier = tier
         self.model_name = tier_model_filename(tier)
         self._output_dir = Path(output_dir) if output_dir else None
+        ckpt = model_dir() / self.model_name
+        yaml_path = ckpt.with_suffix(".yaml")
+        size_mb = ckpt.stat().st_size / 1048576 if ckpt.exists() else 0.0
+        events.info(f"MSS 模型文件：{self.model_name}（{size_mb:.1f}MB），"
+                    f"配置 {yaml_path.name} {'存在' if yaml_path.exists() else '缺失（可能触发下载）'}，"
+                    f"设备 {_cfg.torch_device()}", scope="engine")
         kwargs: dict = {
             "model_file_dir": str(model_dir()),
             "output_format": "WAV",
@@ -239,13 +281,32 @@ class MssSeparator:
         }
         if output_dir:
             kwargs["output_dir"] = str(output_dir)
+        events.info("初始化 Separator…", scope="engine")
         try:
             self.sep = Separator(**kwargs)
         except TypeError as e:  # 老版本参数名差异
             events.warn(f"Separator 构造参数降级：{e}", scope="mss")
             kwargs.pop("sample_rate", None)
             self.sep = Separator(**kwargs)
-        self.sep.load_model(self.model_name)
+        t1 = time.time()
+        events.info(f"Separator 初始化完成（{t1-t0:.2f}s），开始加载权重…", scope="engine")
+        stop = _heartbeat_start("MSS 模型加载中")
+        try:
+            self.sep.load_model(self.model_name)
+        except Exception as e:
+            events.error(f"MSS 模型加载失败：{type(e).__name__}: {e}", scope="engine")
+            raise
+        finally:
+            stop.set()
+        extra = ""
+        try:
+            import torch
+            if torch.cuda.is_available():
+                extra = f"，显存已分配 {torch.cuda.memory_allocated()/1048576:.0f}MB"
+        except Exception:
+            pass
+        events.success(f"MSS 权重加载完成（{time.time()-t1:.2f}s，总计 {time.time()-t0:.2f}s{extra}）",
+                       scope="engine")
 
     def separate(self, wav_path: str | Path) -> tuple[Path, Path]:
         out_base = self._output_dir or Path(wav_path).resolve().parent

@@ -44,11 +44,37 @@ class Embedder:
     def __init__(self, device: str):
         config.ensure_torch()
         from funasr import AutoModel
-        self.model = AutoModel(model="iic/speech_campplus_sv_zh-cn_16k-common",
-                               device=device, disable_update=True, hub="ms")
+        from .. import models_manager
+        local = models_manager.funasr_local_path()
+        model_arg = str(local) if local else "iic/speech_campplus_sv_zh-cn_16k-common"
+        events.info(f"加载 CAM++（{'本地快照 ' + local.name if local else 'ModelScope ID（较慢）'}）…",
+                    scope="engine")
+        self.model = AutoModel(model=model_arg, device=device, disable_update=True, hub="ms")
+        self.device = device
 
     @staticmethod
-    def _to_numpy(v) -> np.ndarray | None:
+    def _vectors(item) -> np.ndarray | None:
+        if not isinstance(item, dict):
+            return None
+        for key in ("spk_embedding", "spk", "embedding"):
+            if key in item:
+                v = item[key]
+                try:
+                    import torch
+                    if isinstance(v, torch.Tensor):
+                        v = v.detach().float().cpu().numpy()
+                except Exception:
+                    pass
+                try:
+                    a = np.asarray(v, dtype="float32")
+                except Exception:
+                    return None
+                if a.ndim == 1:
+                    return a.reshape(1, -1)
+                return a.reshape(-1, a.shape[-1])
+        return None
+
+    def _to_numpy(self, v) -> np.ndarray | None:
         try:
             import torch
             if isinstance(v, torch.Tensor):
@@ -79,6 +105,37 @@ class Embedder:
                     return arr / (np.linalg.norm(arr) + 1e-9)
         return None
 
+    def embed_paths(self, paths: list[str], batch_size: int = 16) -> list[np.ndarray | None]:
+        """批量声纹：一次 generate 处理多个窗口（本地快照下 16 窗约 0.1s）。"""
+        out: list[np.ndarray | None] = [None] * len(paths)
+        if not paths:
+            return out
+        step = max(1, min(batch_size, 64))
+        for start in range(0, len(paths), step):
+            chunk = paths[start:start + step]
+            vectors: list[np.ndarray | None] = []
+            try:
+                res = self.model.generate(input=chunk, batch_size=len(chunk))
+                vecs = []
+                for item in res:
+                    a = self._vectors(item)
+                    if a is None:
+                        raise ValueError("批量结果缺少 spk_embedding")
+                    vecs.append(a)
+                cat = np.concatenate(vecs, axis=0) if vecs else np.zeros((0, 0), "float32")
+                if cat.shape[0] != len(chunk):
+                    raise ValueError(f"批量声纹数量不匹配：{cat.shape[0]} != {len(chunk)}")
+                for i in range(len(chunk)):
+                    v = cat[i]
+                    n = np.linalg.norm(v)
+                    vectors.append(v / (n + 1e-9) if n > 0 else None)
+            except Exception as e:
+                events.warn(f"批量声纹失败（{len(chunk)} 窗），逐窗回退：{e}", scope="embed")
+                vectors = [self.embed_path(p) for p in chunk]
+            for j, v in enumerate(vectors):
+                out[start + j] = v
+        return out
+
 
 class Engine:
     def __init__(self):
@@ -98,10 +155,14 @@ class Engine:
                 self.release_mss()
             from .. import models_manager
             name = mss.tier_model_filename(tier)
+            t0 = time.time()
+            events.info(f"检查 MSS 模型文件：{name}", scope="engine")
             models_manager.ensure_audio_separator_model(name)
-            events.info(f"加载 MSS 模型：{name}（档位 {tier}）", scope="engine")
+            events.info(f"模型文件就绪（{time.time()-t0:.2f}s），加载 MSS 模型（档位 {tier}）…",
+                        scope="engine")
             self._mss = mss.MssSeparator(tier=tier, output_dir=config.TMP_DIR / "mss_out")
             self._mss_tier = tier
+            events.info(f"MSS 模型可用（总耗时 {time.time()-t0:.2f}s）", scope="engine")
             return self._mss
 
     def release_mss(self) -> None:
@@ -114,15 +175,17 @@ class Engine:
     def ensure_vad(self):
         with self._lock:
             if self._vad is None:
+                t0 = time.time()
                 events.info("加载 Silero VAD…", scope="engine")
                 from .vad import Vad
                 self._vad = Vad(device="cpu")
+                events.info(f"Silero VAD 就绪（{time.time()-t0:.2f}s）", scope="engine")
             return self._vad
 
     def ensure_embedder(self) -> Embedder:
         with self._lock:
             if self._embedder is None:
-                events.info("加载 CAM++ 声纹模型（首次将自动下载）…", scope="engine")
+                events.info("加载 CAM++ 声纹模型…", scope="engine")
                 self._embedder = Embedder(device=config.torch_device())
             return self._embedder
 
@@ -130,9 +193,15 @@ class Engine:
         with self._lock:
             if self._sep is None:
                 from .. import models_manager
+                t0 = time.time()
                 models_manager.ensure_clearvoice()
                 events.info("加载 MossFormer2_SS_16K 重叠分离模型…", scope="engine")
-                self._sep = overlap.ClearVoiceSeparator()
+                stop = mss._heartbeat_start("MossFormer2 模型加载中")
+                try:
+                    self._sep = overlap.ClearVoiceSeparator()
+                finally:
+                    stop.set()
+                events.info(f"MossFormer2 就绪（{time.time()-t0:.2f}s）", scope="engine")
             return self._sep
 
     def release_separator(self) -> None:
@@ -242,23 +311,51 @@ class Engine:
         vad_segs = vad.segments(voc16)
         progress("vad", 1.0, f"{len(vad_segs)} 个语音段")
 
-        # ---- embed
+        # ---- embed（批量推理；CAM++ 用本地快照，避免 ModelScope 每窗 hub 校验）
         _chk()
         windows = dz.sliding_windows(vad_segs, duration, cfg.window_seconds,
                                      cfg.window_hop, min_len=0.4)
+        progress("embed", 0.0, "加载 CAM++ 声纹模型…")
+        t_emb = time.time()
         emb = self.ensure_embedder()
+        events.info(f"CAM++ 就绪（{time.time()-t_emb:.2f}s）", scope="engine")
         embs: list[np.ndarray | None] = [None] * len(windows)
-        win_tmp = tmp / "win.wav"
+        active: list[int] = []
         for i, w in enumerate(windows):
             _chk()
             i0, i1 = int(round(w.start * 16000)), int(round(w.end * 16000))
-            clip = np.ascontiguousarray(voc16[i0:i1], dtype="float32")
-            w.energy_db = audio_io.dbfs(clip)
+            w.energy_db = audio_io.dbfs(voc16[i0:i1])
             if w.energy_db > -50.0:  # 静音窗不浪费推理
-                sf.write(str(win_tmp), clip, 16000)
-                embs[i] = emb.embed_path(win_tmp)
-            if i % 5 == 0 or i == len(windows) - 1:
-                progress("embed", (i + 1) / max(len(windows), 1), f"{i + 1}/{len(windows)} 窗")
+                active.append(i)
+        progress("embed", 0.02, f"声纹分析 {len(active)} 个有效窗（批量）")
+        win_dir = tmp / "win"
+        win_dir.mkdir(parents=True, exist_ok=True)
+        batch = 16
+        try:
+            for off in range(0, len(active), batch):
+                _chk()
+                chunk = active[off:off + batch]
+                paths = []
+                for j, i in enumerate(chunk):
+                    w = windows[i]
+                    i0, i1 = int(round(w.start * 16000)), int(round(w.end * 16000))
+                    clip = np.ascontiguousarray(voc16[i0:i1], dtype="float32")
+                    p = win_dir / f"w{off+j:05d}.wav"
+                    sf.write(str(p), clip, 16000)
+                    paths.append(str(p))
+                vecs = emb.embed_paths(paths, batch_size=len(paths))
+                for i, v in zip(chunk, vecs):
+                    embs[i] = v
+                for p in paths:
+                    try:
+                        Path(p).unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                done = off + len(chunk)
+                progress("embed", 0.02 + 0.98 * done / max(len(active), 1),
+                         f"{done}/{len(active)} 窗（批量 {len(chunk)}）")
+        finally:
+            shutil.rmtree(win_dir, ignore_errors=True)
         valid = [(i, e) for i, e in enumerate(embs) if e is not None]
         if len(valid) < 2:
             raise RuntimeError("有效语音窗不足（未检测到足够人声，请检查输入或更换伴奏分离档位）")

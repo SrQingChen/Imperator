@@ -23,6 +23,7 @@ STAGES: list[tuple[str, str, float]] = [
     ("report", "质检与报告", 4),
 ]
 _STAGE_KEYS = [s[0] for s in STAGES]
+_STAGE_NAMES = {s[0]: s[1] for s in STAGES}
 
 
 def _weights_for_duration(duration_s: float) -> dict:
@@ -63,6 +64,7 @@ class Job:
     result: dict | None = None
     _cancel: bool = False
     _stage_t0: float = 0.0
+    _last_progress: float = 0.0
 
     @property
     def job_dir(self) -> Path:
@@ -109,7 +111,8 @@ class JobRunner:
             pass
         job = Job(id=time.strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6],
                   name=name or Path(input_path).name, input_path=str(input_path),
-                  settings=cfg.to_dict(), stage_weights=_weights_for_duration(duration))
+                  settings=cfg.to_dict(), stage_weights=_weights_for_duration(duration),
+                  _last_progress=time.time())
         with self._lock:
             self._jobs[job.id] = job
             self._order.append(job.id)
@@ -194,8 +197,11 @@ class JobRunner:
         job.status = "running"
         job.started_at = time.time()
         job._stage_t0 = time.time()
+        job._last_progress = time.time()
         cfg = settings_mod.Settings.from_dict(job.settings)
         events.stage(f"任务开始：{job.name}", scope=job.id)
+        threading.Thread(target=self._watchdog, args=(job,), name=f"watchdog-{job.id}",
+                         daemon=True).start()
 
         def progress(stage: str, frac: float, note: str = ""):
             if job.stage != stage:
@@ -206,6 +212,8 @@ class JobRunner:
                 job.stage = stage
                 job._stage_t0 = time.time()
                 job.stage_times.setdefault(stage, {"secs": 0.0, "done": False})
+                events.info(f"进入阶段：{_STAGE_NAMES.get(stage, stage)}", scope=job.id)
+            job._last_progress = time.time()
             job.stage_frac = max(0.0, min(1.0, frac))
             if note:
                 job.note = note
@@ -242,6 +250,35 @@ class JobRunner:
             if job.stage and job.stage in job.stage_times:
                 job.stage_times[job.stage]["secs"] = round(
                     job.stage_times[job.stage].get("secs", 0) + time.time() - job._stage_t0, 1)
+
+    def _watchdog(self, job: Job) -> None:
+        """任务无进度监控：2 分钟告警；5 分钟把全部线程堆栈写入 logs/hang_*.log。
+
+        用于诊断“看起来卡死”的模型加载/推理阻塞——只有堆栈能区分磁盘、CUDA、
+        网络等待或死锁，光看进度条是猜不出来的。
+        """
+        import faulthandler
+        last_notice = 0.0
+        last_dump = 0.0
+        while job.status == "running":
+            time.sleep(15)
+            idle = time.time() - (job._last_progress or job.started_at or time.time())
+            stage_name = _STAGE_NAMES.get(job.stage, job.stage or "准备")
+            if idle >= 120 and time.time() - last_notice >= 120:
+                events.warn(f"任务在阶段「{stage_name}」已 {idle:.0f}s 无进度"
+                            f"（模型加载/推理可能较慢；5 分钟会输出线程堆栈）", scope=job.id)
+                last_notice = time.time()
+            if idle >= 300 and time.time() - last_dump >= 300:
+                p = config.LOGS_DIR / f"hang_{job.id}.log"
+                try:
+                    with open(p, "a", encoding="utf-8") as f:
+                        f.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} "
+                                f"idle {idle:.0f}s stage={job.stage} =====\n")
+                        faulthandler.dump_traceback(file=f, all_threads=True)
+                    events.warn(f"任务已 {idle:.0f}s 无进度，线程堆栈写入 {p.name}", scope=job.id)
+                    last_dump = time.time()
+                except Exception as e:
+                    events.warn(f"写入线程堆栈失败：{e}", scope=job.id)
 
     # ------------------------------------------------ 修正重渲染
     def apply_corrections(self, jid: str, moves: list[dict]) -> dict:

@@ -31,6 +31,7 @@ def _query_gpu_smi() -> dict | None:
 
 def _query_torch_vram() -> dict | None:
     try:
+        config.ensure_torch()  # 串行初始化；避免与任务线程并发 import torch
         import torch
         if torch.cuda.is_available():
             return {"allocated_mb": int(torch.cuda.memory_allocated() / 1048576),

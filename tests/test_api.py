@@ -1,4 +1,5 @@
 """API 冒烟测试（不跑真实模型）。"""
+import shutil
 import sys
 from pathlib import Path
 
@@ -10,6 +11,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("IMPERATOR_DATA_DIR", str(tmp_path))
+    # 复制真实模型清单，避免 /api/models 在临时数据目录里尝试联网下载
+    real_checks = Path(__file__).resolve().parent.parent / "data" / "models" / "audio-separator" / "download_checks.json"
+    if real_checks.exists():
+        dst = tmp_path / "models" / "audio-separator" / "download_checks.json"
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(real_checks, dst)
     # 保存原始 app 模块，测试后恢复，避免污染后续测试的数据目录
     saved = {k: v for k, v in sys.modules.items() if k.startswith("app")}
     for mod in list(sys.modules):

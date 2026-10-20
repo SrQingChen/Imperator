@@ -30,7 +30,19 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     def _startup() -> None:
         nonlocal engine, runner, exports_runner
+        from .logging_setup import setup as setup_logging
+        setup_logging()
         os.chdir(config.DATA_DIR)  # clearvoice 以 CWD 相对路径管理 checkpoints
+        # 启动时串行完成 torch/CUDA 初始化，避免 PerfMonitor 与任务线程并发 import
+        try:
+            t_torch = time.time()
+            torch = config.ensure_torch()
+            cuda = bool(torch.cuda.is_available())
+            events.info(f"PyTorch 初始化完成（{time.time()-t_torch:.2f}s，CUDA={cuda}"
+                        + (f"，{torch.cuda.get_device_name(0)}" if cuda else "") + "）",
+                        scope="perf")
+        except Exception as e:
+            events.error(f"PyTorch/CUDA 初始化失败：{type(e).__name__}: {e}", scope="perf")
         perf.start()
         from .pipeline.engine import Engine
         engine = Engine()

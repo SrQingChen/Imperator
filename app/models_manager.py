@@ -48,24 +48,33 @@ def clearvoice_installed() -> bool:
     return any(ckpt.rglob("*.pt")) or any(ckpt.rglob("*.bin")) or any(ckpt.rglob("*.safetensors"))
 
 
-def funasr_cache_installed() -> bool:
-    """兼容 ModelScope 新旧两种缓存布局，权重扩展名 pt/bin 均认。"""
+def funasr_local_path():
+    """返回 CAM++ 的本地快照目录（优先含 campplus_cn_common.bin）。
+
+    注意：funasr 用 ModelScope 模型 ID 时，推理调用可能反复走 hub 校验
+    （实测单窗 20s）；直接传本地目录只需要 0.04s/窗。
+    """
     from pathlib import Path as _P
     home = _P.home() / ".cache" / "modelscope"
-    cands = [
-        home / "hub" / "models" / "iic",           # 旧布局
-        home / "models",                            # 新布局（iic--speech_campplus-*）
-    ]
-    for base in cands:
+    bases = [home / "hub" / "models" / "iic", home / "models"]
+    found = []
+    for base in bases:
         if not base.exists():
             continue
         for d in base.iterdir():
             if "campplus" not in d.name.lower():
                 continue
-            for pat in ("*.pt", "*.bin", "*.safetensors"):
-                if any(d.rglob(pat)):
-                    return True
-    return False
+            for snap in sorted(d.glob("snapshots/*")):
+                if any(snap.rglob("*.bin")) or any(snap.rglob("*.pt")):
+                    found.append(snap)
+    if not found:
+        return None
+    found.sort(key=lambda p: (0 if any(p.glob("*campplus_cn_common.bin")) else 1, str(p)))
+    return found[0]
+
+
+def funasr_cache_installed() -> bool:
+    return funasr_local_path() is not None
 
 
 def status() -> list[dict]:

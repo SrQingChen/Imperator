@@ -149,21 +149,30 @@ def torch_device() -> str:
 
 
 _torch_lock = threading.Lock()
+_torch_ready = False
 
 
 def ensure_torch():
     """串行化 torch 首次导入：多线程并发 import torch 会触发循环导入竞态。
     同时开启对 CUDA 推理安全且收益明确的优化（TF32 / cuDNN autotune）。"""
+    global _torch_ready
     with _torch_lock:
         import torch  # noqa: F401
+        if _torch_ready:
+            return torch
         try:
             if torch.cuda.is_available():
+                torch.cuda.init()
                 # RTX 20/30/40 的 Tensor Core 可走 TF32，RoFormer/Transformer 类
                 # 矩阵乘通常有 10%~30% 提速，精度影响在分离感知上可忽略。
                 torch.backends.cuda.matmul.allow_tf32 = True
                 torch.backends.cudnn.allow_tf32 = True
-                torch.backends.cudnn.benchmark = True
+                # cuDNN autotune 对 CAM++ 这类小模型首批会阻塞 20~40s，
+                # 收益却很小；默认关闭，可用环境变量开启。
+                torch.backends.cudnn.benchmark = (
+                    os.environ.get("IMPERATOR_CUDNN_BENCHMARK", "0") == "1")
             torch.set_float32_matmul_precision("high")
         except Exception:
             pass
+        _torch_ready = True
         return torch
