@@ -57,6 +57,20 @@ def create_app() -> FastAPI:
         for note in dev.notes:
             events.warn(note, scope="server")
 
+        def _warm_models() -> None:
+            """后台预加载 VAD/CAM++：funasr 首次 import 约 25s，放在启动期做，
+            避免用户任务到声纹阶段时干等；任务若提前到达会在同一把引擎锁上等待。"""
+            try:
+                t0 = time.time()
+                engine.ensure_vad()
+                engine.ensure_embedder()
+                events.info(f"VAD/CAM++ 预加载完成（{time.time()-t0:.1f}s）", scope="perf")
+            except Exception as e:
+                events.warn(f"VAD/CAM++ 预加载失败（任务时会重试）：{type(e).__name__}: {e}",
+                            scope="perf")
+
+        threading.Thread(target=_warm_models, name="model-warmup", daemon=True).start()
+
     # ------------------------------------------------ 系统
     @app.get("/api/health")
     def health():

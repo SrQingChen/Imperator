@@ -39,6 +39,7 @@ class Settings:
     output_sr: Literal[44100, 48000, "source"] = 44100
     # 模型
     mss_tier: Literal["standard", "fast", "light", "skip"] = "standard"
+    mss_precision: Literal["auto", "fp16", "autocast", "fp32"] = "auto"
     release_vram: bool = True
     # 声纹库
     voiceprint_match: bool = True
@@ -57,6 +58,8 @@ class Settings:
             errs.append("outlier_mode 非法")
         if self.mss_tier not in ("standard", "fast", "light", "skip"):
             errs.append("mss_tier 非法")
+        if self.mss_precision not in ("auto", "fp16", "autocast", "fp32"):
+            errs.append("mss_precision 非法")
         if self.output_format not in ("float32", "s16", "s24"):
             errs.append("output_format 非法")
         if self.output_sr not in (44100, 48000, "source"):

@@ -128,3 +128,12 @@ def test_stage_weights_for_long_video():
     short = _weights_for_duration(120.0)
     assert abs(sum(short.values()) - 1.0) < 1e-9
     assert short["mss"] < 0.4
+
+
+def test_precision_kwargs():
+    assert mss.precision_kwargs("auto", "cuda") == {"use_native_fp16": True}
+    assert mss.precision_kwargs("fp16", "cuda") == {"use_native_fp16": True}
+    assert mss.precision_kwargs("autocast", "cuda") == {"use_autocast": True}
+    assert mss.precision_kwargs("fp32", "cuda") == {}
+    assert mss.precision_kwargs("auto", "cpu") == {}
+    assert mss.precision_kwargs("autocast", "cpu") == {}

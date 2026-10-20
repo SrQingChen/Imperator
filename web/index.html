@@ -206,6 +206,15 @@
           <option value="skip">跳过（纯人声）</option>
         </select>
       </label>
+      <label>MSS 推理精度
+        <select id="s-mss_precision">
+          <option value="auto">自动（CUDA 用 FP16，推荐）</option>
+          <option value="fp16">原生 FP16（最快、显存最低）</option>
+          <option value="autocast">Autocast（FP32 权重 + FP16 计算）</option>
+          <option value="fp32">FP32（最保守）</option>
+        </select>
+        <span class="muted">实测 FP16 比 FP32 快约 45%，波形差约 -73dB，显存更低</span>
+      </label>
       <label class="checkline"><input type="checkbox" id="s-release_vram"> 任务后释放显存（低显存建议开）</label>
       <label class="checkline"><input type="checkbox" id="s-voiceprint_match"> 声纹库自动匹配命名</label>
     </div>

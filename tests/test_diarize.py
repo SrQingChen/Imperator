@@ -79,7 +79,7 @@ def test_settings_validation_hard_bounds():
         dict(window_hop=0), dict(window_hop=-0.5), dict(window_seconds=0.1),
         dict(window_hop=2.0, window_seconds=1.0),   # hop > win
         dict(overlap_context=-1), dict(listen_port=99999), dict(listen_port=0),
-        dict(output_format="xyz"), dict(output_sr=22050),
+        dict(output_format="xyz"), dict(output_sr=22050), dict(mss_precision="int8"),
         dict(auto_merge_score=0.3, auto_unknown_score=0.5),  # unknown > merge
         dict(min_new_speaker_duration=-1),
         dict(listen_host="  "),
