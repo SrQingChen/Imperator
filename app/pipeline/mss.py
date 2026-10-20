@@ -278,13 +278,14 @@ class MssSeparator:
     """薄封装：构造即加载模型，separate() 输出 vocals/instrumental 路径。"""
 
     def __init__(self, tier: str = "standard", output_dir: str | Path | None = None,
-                 precision: str = "auto"):
+                 precision: str = "auto", overlap: int = 2):
         from .. import config as _cfg
         t0 = time.time()
         _cfg.ensure_torch()
         from audio_separator.separator import Separator
         self.tier = tier
         self.precision = precision
+        self.overlap = int(overlap)
         self.model_name = tier_model_filename(tier)
         self._output_dir = Path(output_dir) if output_dir else None
         ckpt = model_dir() / self.model_name
@@ -294,12 +295,14 @@ class MssSeparator:
         self._precision_kwargs = precision_kwargs(precision, device)
         events.info(f"MSS 模型文件：{self.model_name}（{size_mb:.1f}MB），"
                     f"配置 {yaml_path.name} {'存在' if yaml_path.exists() else '缺失（可能触发下载）'}，"
-                    f"设备 {device}，精度 {precision} → {self._precision_kwargs or 'FP32'}",
-                    scope="engine")
+                    f"设备 {device}，精度 {precision} → {self._precision_kwargs or 'FP32'}，"
+                    f"重叠窗口 {self.overlap}", scope="engine")
         kwargs: dict = {
             "model_file_dir": str(model_dir()),
             "output_format": "WAV",
             "sample_rate": 44100,
+            "mdxc_params": {"segment_size": 256, "override_model_segment_size": False,
+                            "batch_size": None, "overlap": self.overlap, "pitch_shift": 0},
         }
         if output_dir:
             kwargs["output_dir"] = str(output_dir)

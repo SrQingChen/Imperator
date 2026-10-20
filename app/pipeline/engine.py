@@ -143,15 +143,16 @@ class Engine:
         self._mss: mss.MssSeparator | None = None
         self._mss_tier: str | None = None
         self._mss_precision: str | None = None
+        self._mss_overlap: int | None = None
         self._vad = None
         self._embedder: Embedder | None = None
         self._sep: overlap.ClearVoiceSeparator | None = None
 
     # ------------------------------------------------ 模型生命周期
-    def ensure_mss(self, tier: str, precision: str = "auto") -> mss.MssSeparator:
+    def ensure_mss(self, tier: str, precision: str = "auto", overlap: int = 2) -> mss.MssSeparator:
         with self._lock:
             if (self._mss is not None and self._mss_tier == tier
-                    and self._mss_precision == precision):
+                    and self._mss_precision == precision and self._mss_overlap == overlap):
                 return self._mss
             if self._mss is not None:
                 self.release_mss()
@@ -161,11 +162,12 @@ class Engine:
             events.info(f"检查 MSS 模型文件：{name}", scope="engine")
             models_manager.ensure_audio_separator_model(name)
             events.info(f"模型文件就绪（{time.time()-t0:.2f}s），加载 MSS 模型（档位 {tier}，"
-                        f"精度 {precision}）…", scope="engine")
+                        f"精度 {precision}，重叠 {overlap}）…", scope="engine")
             self._mss = mss.MssSeparator(tier=tier, output_dir=config.TMP_DIR / "mss_out",
-                                         precision=precision)
+                                         precision=precision, overlap=overlap)
             self._mss_tier = tier
             self._mss_precision = precision
+            self._mss_overlap = overlap
             events.info(f"MSS 模型可用（总耗时 {time.time()-t0:.2f}s）", scope="engine")
             return self._mss
 
@@ -174,6 +176,7 @@ class Engine:
             self._mss = None
             self._mss_tier = None
             self._mss_precision = None
+            self._mss_overlap = None
             free_vram()
             events.info("MSS 模型已卸载（显存已释放）", scope="engine")
 
@@ -264,7 +267,7 @@ class Engine:
                            f"MSS 预计 {perf_plan['estimated_seconds']/60:.1f} 分钟"
                            if perf_plan.get("estimated_rtf") else ""), scope="perf")
             progress("mss", 0.02, f"性能规划：{perf_plan['reason']}")
-            sep = self.ensure_mss(cfg.mss_tier, cfg.mss_precision)
+            sep = self.ensure_mss(cfg.mss_tier, cfg.mss_precision, cfg.mss_overlap)
             t_mss = time.time()
             if perf_plan["chunk_seconds"] and duration > perf_plan["chunk_seconds"]:
                 progress("mss", 0.05, f"分块分离（{perf_plan['chunks']} 块，"

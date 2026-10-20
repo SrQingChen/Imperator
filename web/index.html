@@ -215,6 +215,14 @@
         </select>
         <span class="muted">实测 FP16 比 FP32 快约 45%，波形差约 -73dB，显存更低</span>
       </label>
+      <label>重叠预测窗口数
+        <select id="s-mss_overlap">
+          <option value="2">2（推荐，最快）</option>
+          <option value="3">3（折中）</option>
+          <option value="4">4（保守，接缝更稳）</option>
+        </select>
+        <span class="muted">2 比 4 快约 1.85 倍；实测波形差 -55dB（不可闻）</span>
+      </label>
       <label class="checkline"><input type="checkbox" id="s-release_vram"> 任务后释放显存（低显存建议开）</label>
       <label class="checkline"><input type="checkbox" id="s-voiceprint_match"> 声纹库自动匹配命名</label>
     </div>

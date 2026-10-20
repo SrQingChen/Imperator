@@ -40,6 +40,7 @@ class Settings:
     # 模型
     mss_tier: Literal["standard", "fast", "light", "skip"] = "standard"
     mss_precision: Literal["auto", "fp16", "autocast", "fp32"] = "auto"
+    mss_overlap: int = 2          # RoFormer 重叠预测窗口数：2 快，4 保守
     release_vram: bool = True
     # 声纹库
     voiceprint_match: bool = True
@@ -60,6 +61,8 @@ class Settings:
             errs.append("mss_tier 非法")
         if self.mss_precision not in ("auto", "fp16", "autocast", "fp32"):
             errs.append("mss_precision 非法")
+        if not (2 <= self.mss_overlap <= 8):
+            errs.append("mss_overlap 应在 2~8")
         if self.output_format not in ("float32", "s16", "s24"):
             errs.append("output_format 非法")
         if self.output_sr not in (44100, 48000, "source"):
