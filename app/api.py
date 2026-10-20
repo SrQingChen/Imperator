@@ -116,7 +116,8 @@ def create_app() -> FastAPI:
                          outlier_mode: str | None = Form(None),
                          outlier_ratio_percent: float | None = Form(None),
                          output_format: str | None = Form(None),
-                         output_sr: str | None = Form(None)):
+                         output_sr: str | None = Form(None),
+                         resume_from: str | None = Form(None)):
         overrides: dict = {}
         if tier:
             overrides["mss_tier"] = tier
@@ -148,8 +149,19 @@ def create_app() -> FastAPI:
             raise HTTPException(400, "请提供绝对路径")
         if not p.exists():
             raise HTTPException(400, f"文件不存在：{input_path}")
+        resume_dir = None
+        if resume_from:
+            rd = Path(resume_from).resolve()
+            try:
+                rd.relative_to(config.OUTPUTS_DIR.resolve())
+            except ValueError:
+                raise HTTPException(400, "resume_from 必须位于任务输出目录内")
+            for name in ("master.wav", "vocals_keep.wav", "inst_keep.wav"):
+                if not (rd / name).exists():
+                    raise HTTPException(400, f"续跑缺少中间文件：{name}")
+            resume_dir = str(rd)
         try:
-            job = runner.create(str(p), p.name, overrides)
+            job = runner.create(str(p), p.name, overrides, resume_from=resume_dir)
         except ValueError as e:
             raise HTTPException(400, str(e))
         return {"ok": True, "job": job.to_dict()}

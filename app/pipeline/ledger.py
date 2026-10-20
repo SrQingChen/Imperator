@@ -15,9 +15,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+import psutil
 import soundfile as sf
 
-from .. import config
+from .. import config, events
 from . import audio_io
 
 CTRL_RATE = 1000
@@ -197,6 +198,22 @@ def write_tracks(master_path: Path, vocals_path: Path, inst_path: Path, out_dir:
         track_specs.append((f"speaker_{sid + 1:02d}", speaker_labels.get(sid, f"说话人 {sid + 1}")))
     track_specs += [("other", "未归属人声"), ("bgm", "伴奏 / BGM"), ("residual", "残差（诊断）")]
 
+    # 磁盘预算：说话人多时 float32 全轨会达到上百 GB，按剩余空间自动降为 16-bit。
+    requested_subtype = subtype
+    bytes_per = {"FLOAT": 4, "PCM_24": 3, "PCM_16": 2}.get(subtype, 4)
+    est_bytes = n * ch * bytes_per * len(track_specs)
+    free_bytes = psutil.disk_usage(str(out_dir)).free
+    format_downgraded = False
+    if est_bytes > free_bytes * 0.6 and subtype != "PCM_16":
+        subtype = "PCM_16"
+        format_downgraded = True
+        events.warn(f"预计输出 {est_bytes/2**30:.1f}GB，超过磁盘余量 {free_bytes/2**30:.1f}GB 的 60%；"
+                    f"自动改用 16-bit 输出（量化误差 <1e-4，Σ 契约仍成立）", scope="ledger")
+    est_bytes_low = n * ch * 2 * len(track_specs)
+    if est_bytes_low > free_bytes * 0.9:
+        raise RuntimeError(f"输出预计 {est_bytes_low/2**30:.1f}GB，超过磁盘余量 "
+                           f"{free_bytes/2**30:.1f}GB；请提高合并阈值或限制说话人数后重试")
+
     tmp_dir = out_dir / "_44100"
     direct_dir = out_dir if streaming_ok else tmp_dir
     direct_dir.mkdir(parents=True, exist_ok=True)
@@ -222,9 +239,13 @@ def write_tracks(master_path: Path, vocals_path: Path, inst_path: Path, out_dir:
             voc_b = _read_block(vf, want, ch)
             inst_b = _read_block(inf, want, ch)
             t = (np.arange(i, j, dtype="float64")) / sr
-            g_spk = {sid: np.interp(t, ctrl_times, g).astype("float32")[:, None]
+            # 只截取当前块覆盖的控制率片段：避免每个说话人每块都对整段 610 万点插值
+            c0 = max(0, int(np.floor(i * CTRL_RATE / sr)) - 1)
+            c1 = min(len(ctrl_times), int(np.ceil(j * CTRL_RATE / sr)) + 2)
+            ct = ctrl_times[c0:c1]
+            g_spk = {sid: np.interp(t, ct, g[c0:c1]).astype("float32")[:, None]
                      for sid, g in gains_ctrl.items()}
-            m0 = np.interp(t, ctrl_times, m0_ctrl).astype("float32")
+            m0 = np.interp(t, ct, m0_ctrl[c0:c1]).astype("float32")
             neg_m0 += int(np.sum(m0 < -1e-6))
             acc = np.zeros_like(voc_b, dtype="float32")
             for sid, g in g_spk.items():
@@ -282,6 +303,9 @@ def write_tracks(master_path: Path, vocals_path: Path, inst_path: Path, out_dir:
         "vocals_len_adjusted": bool(adj_v),
         "inst_len_adjusted": bool(adj_i),
         "sr_mismatch": sr_mismatch,
+        "output_format": subtype,
+        "format_downgraded": format_downgraded,
+        "estimated_output_gb": round(est_bytes / 2**30, 1),
         "track_energy": {k: v for k, v in energy.items()},
         "note": "residual 吸收 MSS 分离的线性不一致；占比大说明伴奏分离在该素材上偏差较大",
     }

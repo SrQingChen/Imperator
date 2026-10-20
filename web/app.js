@@ -247,6 +247,7 @@ function renderQC(qc) {
   $("#qc-strip").innerHTML = `
     <div class="qc-chip ${pass ? "pass" : "fail"}">Σ 还原偏差 <b>${sumErr == null ? "—" : sumErr.toExponential(2)}</b> ${pass ? "✓" : "✗"}</div>
     <div class="qc-chip">残差能量占比 <b>${(qc.residual_energy_ratio ?? 0).toFixed(4)}</b></div>
+    ${qc.format_downgraded ? `<div class="qc-chip">输出已自动降为 16-bit（磁盘空间不足）</div>` : ""}
     <div class="qc-chip">说话人 <b>${state.resultData.speakers.length}</b></div>
     <div class="qc-chip">重叠段 <b>${state.resultData.segments.filter(s => s.kind === "overlap").length}</b></div>
     <div class="qc-chip">耗时 <b>${qc.elapsed_s ?? "—"}s</b> · RTF <b>${qc.rtf ?? "—"}</b></div>

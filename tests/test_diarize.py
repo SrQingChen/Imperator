@@ -168,3 +168,26 @@ def test_many_speakers_12_kept_and_ids_continuous():
              for s in res.segments if s.speaker >= 0]
     gains = ledger.build_ctrl_gains(items, list(range(K)), len(embs) * 1.0 + 2)
     assert len(gains) == K
+
+
+def test_normalize_speaker_ids_compacts_and_remaps():
+    from types import SimpleNamespace
+    from app.pipeline.engine import _normalize_speaker_ids
+    clusters = [
+        dz.Cluster(label=1, centroid=np.ones(4), speaker_id=2, duration=5.0, name="说话人 3"),
+        dz.Cluster(label=2, centroid=np.ones(4), speaker_id=7, duration=3.0, name="库主人"),
+    ]
+    segs = [dz.Segment(start=0, end=1, speaker=2), dz.Segment(start=1, end=2, speaker=7)]
+    items = [{"speaker": 2, "kind": "speech", "start": 0, "end": 1},
+             {"speaker": 7, "kind": "overlap", "start": 1, "end": 2,
+              "speakers": [2, 7], "masks": {2: np.ones(4), 7: np.ones(4)}}]
+    res = SimpleNamespace(clusters=clusters, segments=segs)
+    cent = {2: np.ones(4), 7: np.ones(4)}
+    labels = {2: "说话人 3", 7: "库主人"}
+    ids, cent2, labels2 = _normalize_speaker_ids(res, items, [2, 7], cent, labels)
+    assert ids == [0, 1]
+    assert labels2[0] == "说话人 1" and labels2[1] == "库主人"
+    assert [c.speaker_id for c in clusters] == [0, 1]
+    assert [s.speaker for s in segs] == [0, 1]
+    assert items[1]["speakers"] == [0, 1]
+    assert set(items[1]["masks"]) == {0, 1}

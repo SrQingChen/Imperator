@@ -17,6 +17,39 @@ from ..settings import Settings
 from . import audio_io, diarize as dz, ledger, mss, outlier, overlap, report
 
 
+def _normalize_speaker_ids(res, items, spk_ids, centroids, label_map):
+    """把可能带空洞的 speaker_id 压成 0..N-1，并同步段/区域/掩码键。
+
+    多阶段（聚类→偶发排除→声纹库）重排后可能出现 0,2,5… 这样的稀疏 id；
+    不压缩会生成 speaker_01/03/06 这种文件名，且 UI/轨数统计混乱。
+    """
+    live = sorted(set(spk_ids))
+    remap = {old: i for i, old in enumerate(live)}
+    for c in res.clusters:
+        if c.speaker_id in remap:
+            c.speaker_id = remap[c.speaker_id]
+            if c.name.startswith("说话人 "):
+                c.name = f"说话人 {c.speaker_id + 1}"
+    for s in res.segments:
+        if s.speaker in remap:
+            s.speaker = remap[s.speaker]
+    for it in items:
+        if isinstance(it.get("speaker"), int) and it["speaker"] in remap:
+            it["speaker"] = remap[it["speaker"]]
+        if it.get("speakers"):
+            it["speakers"] = [remap.get(x, x) for x in it["speakers"]]
+        if it.get("masks"):
+            it["masks"] = {remap.get(k, k): v for k, v in it["masks"].items()}
+    new_centroids = {remap[k]: v for k, v in centroids.items() if k in remap}
+    new_labels = {}
+    for old, name in label_map.items():
+        if old not in remap:
+            continue
+        new = remap[old]
+        new_labels[new] = f"说话人 {new + 1}" if name.startswith("说话人 ") else name
+    return sorted(new_labels), new_centroids, new_labels
+
+
 def free_vram() -> dict:
     before = 0
     try:
@@ -227,7 +260,7 @@ class Engine:
 
     # ------------------------------------------------ 全流程
     def run(self, input_path: Path, job_dir: Path, cfg: Settings,
-            progress, cancel) -> dict:
+            progress, cancel, resume_from: Path | None = None) -> dict:
         t_start = time.time()
         job_dir.mkdir(parents=True, exist_ok=True)
         tmp = job_dir / "_tmp"
@@ -238,70 +271,95 @@ class Engine:
             if cancel():
                 raise Cancelled()
 
-        # ---- extract
-        _chk()
-        progress("extract", 0.05, "ffmpeg 抽取 44.1k 主轴音频")
-        master = audio_io.extract_master(input_path, job_dir / "master.wav")
-        mst_info = sf.info(str(master))
-        duration = mst_info.frames / mst_info.samplerate
-        progress("extract", 1.0, f"时长 {duration:.1f}s")
-
-        # ---- mss
-        _chk()
-        vocals_keep = job_dir / "vocals_keep.wav"
-        inst_keep = job_dir / "inst_keep.wav"
+        # ---- 续跑：复用已完成任务的 master/vocals/instrumental，跳过抽取与 MSS
+        resumed = resume_from is not None
         perf_plan: dict = {}
         mss_meta: dict = {}
-        if cfg.mss_tier == "skip":
-            events.info("MSS 档位=跳过（视为纯人声输入）：vocals=master，bgm=静音", scope="pipeline")
-            shutil.copyfile(master, vocals_keep)
-            audio_io.run_ffmpeg(["-f", "lavfi", "-i",
-                                 f"anullsrc=channel_layout=stereo:sample_rate={mst_info.samplerate}",
-                                 "-t", f"{duration:.3f}", "-c:a", "pcm_f32le", str(inst_keep)])
-            progress("mss", 1.0, "跳过（纯人声模式）")
-            mss_meta = {"mode": "skip"}
+        if resumed:
+            src_dir = Path(resume_from)
+            required = ("master.wav", "vocals_keep.wav", "inst_keep.wav")
+            for name in required:
+                if not (src_dir / name).exists():
+                    raise FileNotFoundError(f"续跑缺少中间文件：{src_dir / name}")
+            progress("prepare", 0.1, "续跑：复用已有中间结果")
+            for k, name in enumerate(required):
+                shutil.copyfile(src_dir / name, job_dir / name)
+                progress("prepare", 0.1 + 0.8 * (k + 1) / len(required), f"复制 {name}")
+            master = job_dir / "master.wav"
+            vocals_keep = job_dir / "vocals_keep.wav"
+            inst_keep = job_dir / "inst_keep.wav"
+            mst_info = sf.info(str(master))
+            duration = mst_info.frames / mst_info.samplerate
+            progress("extract", 1.0, "续跑：复用主轴音频")
+            progress("mss", 1.0, "续跑：复用已有伴奏/人声分离结果")
+            perf_plan = {"resumed_from": str(src_dir)}
+            mss_meta = {"mode": "resume", "source": str(src_dir)}
+            events.info(f"续跑：复用 {src_dir.name} 的 master/vocals/inst", scope="pipeline")
         else:
-            perf_plan = mss.plan_for_duration(duration, mss.tier_model_filename(cfg.mss_tier))
-            events.info(f"性能规划：{perf_plan['reason']}"
-                        + (f"；上次实测 RTF {perf_plan['estimated_rtf']:.2f}，"
-                           f"MSS 预计 {perf_plan['estimated_seconds']/60:.1f} 分钟"
-                           if perf_plan.get("estimated_rtf") else ""), scope="perf")
-            progress("mss", 0.02, f"性能规划：{perf_plan['reason']}")
-            sep = self.ensure_mss(cfg.mss_tier, cfg.mss_precision, cfg.mss_overlap)
-            t_mss = time.time()
-            if perf_plan["chunk_seconds"] and duration > perf_plan["chunk_seconds"]:
-                progress("mss", 0.05, f"分块分离（{perf_plan['chunks']} 块，"
-                                      f"{perf_plan['chunk_seconds']:.0f}s/块）")
-                _bench_saved = [False]
+            # ---- extract
+            _chk()
+            progress("extract", 0.05, "ffmpeg 抽取 44.1k 主轴音频")
+            master = audio_io.extract_master(input_path, job_dir / "master.wav")
+            mst_info = sf.info(str(master))
+            duration = mst_info.frames / mst_info.samplerate
+            progress("extract", 1.0, f"时长 {duration:.1f}s")
 
-                def _mss_prog(frac: float, processed: float, rtf: float):
-                    if not _bench_saved[0] and processed >= 60:
-                        mss.save_benchmark(rtf, sep.model_name)
-                        _bench_saved[0] = True
-                    progress("mss", 0.05 + 0.9 * frac,
-                             f"伴奏分离 {processed/60:.1f}/{duration/60:.1f} 分钟 · 实测 RTF {rtf:.2f}")
-
-                try:
-                    mss_meta = sep.separate_chunked(
-                        master, vocals_keep, inst_keep,
-                        perf_plan["chunk_seconds"], perf_plan["overlap_seconds"],
-                        _mss_prog, cancel)
-                except mss.MssCancelled:
-                    raise Cancelled()
-                mss_meta["mode"] = "chunked"
-                mss.save_benchmark(mss_meta["rtf"], sep.model_name)
+            # ---- mss
+            _chk()
+            vocals_keep = job_dir / "vocals_keep.wav"
+            inst_keep = job_dir / "inst_keep.wav"
+            perf_plan: dict = {}
+            mss_meta: dict = {}
+            if cfg.mss_tier == "skip":
+                events.info("MSS 档位=跳过（视为纯人声输入）：vocals=master，bgm=静音", scope="pipeline")
+                shutil.copyfile(master, vocals_keep)
+                audio_io.run_ffmpeg(["-f", "lavfi", "-i",
+                                     f"anullsrc=channel_layout=stereo:sample_rate={mst_info.samplerate}",
+                                     "-t", f"{duration:.3f}", "-c:a", "pcm_f32le", str(inst_keep)])
+                progress("mss", 1.0, "跳过（纯人声模式）")
+                mss_meta = {"mode": "skip"}
             else:
-                progress("mss", 0.15, "分离伴奏与人声（大模型推理，长音频较久）")
-                vocals_path, inst_path = sep.separate(master)
-                shutil.move(str(vocals_path), vocals_keep)
-                shutil.move(str(inst_path), inst_keep)
-                el = max(time.time() - t_mss, 1e-6)
-                mss_meta = {"mode": "single", "elapsed_s": round(el, 1),
-                            "rtf": round(el / max(duration, 1e-6), 3)}
-                mss.save_benchmark(mss_meta["rtf"], sep.model_name)
-            if cfg.release_vram and config.get_device().has_nvidia:
-                self.release_mss()
-            progress("mss", 1.0, f"完成（RTF {mss_meta.get('rtf', '—')}）")
+                perf_plan = mss.plan_for_duration(duration, mss.tier_model_filename(cfg.mss_tier))
+                events.info(f"性能规划：{perf_plan['reason']}"
+                            + (f"；上次实测 RTF {perf_plan['estimated_rtf']:.2f}，"
+                               f"MSS 预计 {perf_plan['estimated_seconds']/60:.1f} 分钟"
+                               if perf_plan.get("estimated_rtf") else ""), scope="perf")
+                progress("mss", 0.02, f"性能规划：{perf_plan['reason']}")
+                sep = self.ensure_mss(cfg.mss_tier, cfg.mss_precision, cfg.mss_overlap)
+                t_mss = time.time()
+                if perf_plan["chunk_seconds"] and duration > perf_plan["chunk_seconds"]:
+                    progress("mss", 0.05, f"分块分离（{perf_plan['chunks']} 块，"
+                                          f"{perf_plan['chunk_seconds']:.0f}s/块）")
+                    _bench_saved = [False]
+
+                    def _mss_prog(frac: float, processed: float, rtf: float):
+                        if not _bench_saved[0] and processed >= 60:
+                            mss.save_benchmark(rtf, sep.model_name)
+                            _bench_saved[0] = True
+                        progress("mss", 0.05 + 0.9 * frac,
+                                 f"伴奏分离 {processed/60:.1f}/{duration/60:.1f} 分钟 · 实测 RTF {rtf:.2f}")
+
+                    try:
+                        mss_meta = sep.separate_chunked(
+                            master, vocals_keep, inst_keep,
+                            perf_plan["chunk_seconds"], perf_plan["overlap_seconds"],
+                            _mss_prog, cancel)
+                    except mss.MssCancelled:
+                        raise Cancelled()
+                    mss_meta["mode"] = "chunked"
+                    mss.save_benchmark(mss_meta["rtf"], sep.model_name)
+                else:
+                    progress("mss", 0.15, "分离伴奏与人声（大模型推理，长音频较久）")
+                    vocals_path, inst_path = sep.separate(master)
+                    shutil.move(str(vocals_path), vocals_keep)
+                    shutil.move(str(inst_path), inst_keep)
+                    el = max(time.time() - t_mss, 1e-6)
+                    mss_meta = {"mode": "single", "elapsed_s": round(el, 1),
+                                "rtf": round(el / max(duration, 1e-6), 3)}
+                    mss.save_benchmark(mss_meta["rtf"], sep.model_name)
+                if cfg.release_vram and config.get_device().has_nvidia:
+                    self.release_mss()
+                progress("mss", 1.0, f"完成（RTF {mss_meta.get('rtf', '—')}）")
 
         # ---- 分析支线：vocals → 16k 单声道（流式抽取，不整轨载入再重采样）
         _chk()
@@ -449,6 +507,8 @@ class Engine:
         if not spk_ids:
             raise RuntimeError("未发现任何说话人（全部人声未归属，请降低合并阈值 τ 或检查素材）")
         label_map = {k: v for k, v in label_map.items() if k in spk_ids}
+        spk_ids, centroids, label_map = _normalize_speaker_ids(
+            res, items, spk_ids, centroids, label_map)
         gains = ledger.build_ctrl_gains(items, spk_ids, duration)
         progress("ledger", 0.3, "流式写轨（Σ 恒等校验中）")
 

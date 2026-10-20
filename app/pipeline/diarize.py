@@ -235,8 +235,8 @@ def apply_voiceprints(res: "DiarizeResult", library: list[dict], threshold: floa
             c.name = v["name"]
             audit.append({"ts": time.time(), "action": "voiceprint_name",
                           "detail": f"聚类 {c.label} 命中声纹库「{v['name']}」(sim={sim:.3f}) → 重命名"})
-    # 4) id 连续化：只重排存活簇（speaker_id≥0），死簇固定 -1；segments/windows 同步
-    live = [c for c in clusters if c.speaker_id >= 0]
+    # 4) id 连续化：只重排存活簇（speaker_id≥0 且 duration>0），死簇固定 -1；segments/windows 同步
+    live = [c for c in clusters if c.speaker_id >= 0 and c.duration > 0]
     ids = sorted({c.speaker_id for c in live})
     remap = {old: new for new, old in enumerate(ids)}
     for c in clusters:

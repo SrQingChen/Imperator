@@ -49,6 +49,7 @@ class Job:
     name: str
     input_path: str
     settings: dict
+    resume_dir: str | None = None
     created_at: float = field(default_factory=time.time)
     status: str = "queued"            # queued/running/done/error/cancelled
     stage: str = ""
@@ -77,6 +78,7 @@ class Job:
              "eta_s": self.eta_s, "created_at": self.created_at,
              "started_at": self.started_at, "finished_at": self.finished_at,
              "stage_times": self.stage_times, "stages": [s[0] for s in STAGES],
+             "resume_from": self.resume_dir,
              "stage_names": {s[0]: s[1] for s in STAGES}}
         if full and self.result:
             d["result"] = self.result
@@ -95,7 +97,8 @@ class JobRunner:
         self._thread.start()
 
     # ------------------------------------------------ API 侧
-    def create(self, input_path: str, name: str | None, overrides: dict | None) -> Job:
+    def create(self, input_path: str, name: str | None, overrides: dict | None,
+               resume_from: str | None = None) -> Job:
         cfg = settings_mod.load()
         if overrides:
             merged = {**cfg.to_dict(), **overrides}
@@ -109,9 +112,12 @@ class JobRunner:
             duration = audio_io.probe_media(str(input_path)).duration
         except Exception:
             pass
+        job_name = (f"续跑_{name or Path(input_path).name}" if resume_from
+                    else (name or Path(input_path).name))
         job = Job(id=time.strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6],
-                  name=name or Path(input_path).name, input_path=str(input_path),
-                  settings=cfg.to_dict(), stage_weights=_weights_for_duration(duration),
+                  name=job_name, input_path=str(input_path),
+                  settings=cfg.to_dict(), resume_dir=resume_from,
+                  stage_weights=_weights_for_duration(duration),
                   _last_progress=time.time())
         with self._lock:
             self._jobs[job.id] = job
@@ -228,7 +234,8 @@ class JobRunner:
             job.stage = "prepare"
             job.stage_times["prepare"] = {"secs": 0.0, "done": True}
             result = self.engine.run(Path(job.input_path), job.job_dir, cfg,
-                                     progress, lambda: job._cancel)
+                                     progress, lambda: job._cancel,
+                                     resume_from=Path(job.resume_dir) if job.resume_dir else None)
             job.result = result
             job.status = "done"
             job.progress = 1.0

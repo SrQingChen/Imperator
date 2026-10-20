@@ -120,6 +120,8 @@ python scripts/fetch_models.py --all
 - **CUDA 利用**：TF32 开启；cuDNN autotune 默认关闭（CAM++ 这类小模型首批会被阻塞 20–40 秒，收益很小，可用 `IMPERATOR_CUDNN_BENCHMARK=1` 开启）。
 - **声纹批处理**：CAM++ 直接加载本地快照（用 ModelScope 模型 ID 时每次推理会走 hub 校验，实测单窗 20 秒），每 16 窗批量推理，并在启动时后台预加载；20 秒测试任务整体从 157 秒降到 **13.7 秒**（MSS 7.6 秒、声纹 0.4 秒）。
 - **实测后不采用的方案**：`torch.compile` 稳态无提升、冷启动更慢；audio-separator 对 RoFormer 明确忽略 `batch_size`；TensorRT/ONNX 收益有限但带来固定 shape、engine 版本矩阵和安装成本；CUDA Graph 预估仅 3–8%；INT8/FP8 对掩码回归质量风险高。以上均不进入默认路径。
+- **大说话人数账本**：按 1 秒块切片控制曲线插值（之前每个块都对整段 610 万点 × 每个说话人插值，48 人时预算约 80 分钟）；实测 101.8 分钟 / 48 人任务账本 **9.9 分钟**。预计输出超过磁盘余量时自动降为 16-bit（本次 float32 预计 101.8GB → 实际 56.9GB，Σ 误差 1.5e-4，契约仍成立）。
+- **断点续跑**：任务在重叠/账本阶段中断时，可复用该任务目录里已完成的 master/vocals/instrumental，从 VAD 继续而不是重跑 MSS（API `resume_from`；本次实际用它完成了 101.8 分钟 / 48 人任务）。
 - **可诊断性**：第三方库日志写入 `data/logs/server.log`（DEBUG），UI 事件流同步 INFO+；模型加载每 5 秒心跳；任务 2 分钟无进度告警、5 分钟自动把全部线程堆栈写入 `data/logs/hang_<任务ID>.log`。
 
 ## 🎬 切出某人的视频 / 只导出音频

@@ -78,3 +78,17 @@ def test_resample_48k_keeps_identity(trio):
     k = min(acc.shape[0], mst48.shape[0])
     err = float(np.max(np.abs(acc[:k] - mst48[:k])))
     assert err < 2e-3, err
+
+
+def test_auto_downgrade_to_16bit_when_disk_low(trio, monkeypatch):
+    from types import SimpleNamespace
+    tmp, m, v, i, n = trio
+    monkeypatch.setattr(ledger.psutil, "disk_usage",
+                        lambda _p: SimpleNamespace(free=6 * 1024 * 1024))
+    items = [{"start": 0.0, "end": 5.0, "speaker": 0, "kind": "speech"}]
+    gains = ledger.build_ctrl_gains(items, [0], n / SR)
+    led = ledger.write_tracks(m, v, i, tmp / "out16", gains, {0: "A"})
+    assert led.qc["format_downgraded"] is True
+    assert led.qc["output_format"] == "PCM_16"
+    ver = ledger.verify_sum([tmp / "out16" / t["file"] for t in led.tracks], m, SR)
+    assert ver["pass"], ver
