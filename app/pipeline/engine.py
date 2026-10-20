@@ -173,30 +173,70 @@ class Engine:
         _chk()
         vocals_keep = job_dir / "vocals_keep.wav"
         inst_keep = job_dir / "inst_keep.wav"
+        perf_plan: dict = {}
+        mss_meta: dict = {}
         if cfg.mss_tier == "skip":
             events.info("MSS 档位=跳过（视为纯人声输入）：vocals=master，bgm=静音", scope="pipeline")
             shutil.copyfile(master, vocals_keep)
-            x, sr = audio_io.load_audio(master)
-            audio_io.save_wav(inst_keep, np.zeros_like(x), sr)
-            del x
+            audio_io.run_ffmpeg(["-f", "lavfi", "-i",
+                                 f"anullsrc=channel_layout=stereo:sample_rate={mst_info.samplerate}",
+                                 "-t", f"{duration:.3f}", "-c:a", "pcm_f32le", str(inst_keep)])
             progress("mss", 1.0, "跳过（纯人声模式）")
+            mss_meta = {"mode": "skip"}
         else:
-            progress("mss", 0.02, "加载伴奏分离模型")
+            perf_plan = mss.plan_for_duration(duration, mss.tier_model_filename(cfg.mss_tier))
+            events.info(f"性能规划：{perf_plan['reason']}"
+                        + (f"；上次实测 RTF {perf_plan['estimated_rtf']:.2f}，"
+                           f"MSS 预计 {perf_plan['estimated_seconds']/60:.1f} 分钟"
+                           if perf_plan.get("estimated_rtf") else ""), scope="perf")
+            progress("mss", 0.02, f"性能规划：{perf_plan['reason']}")
             sep = self.ensure_mss(cfg.mss_tier)
-            progress("mss", 0.15, "分离伴奏与人声（大模型推理，长音频较久）")
-            vocals_path, inst_path = sep.separate(master)
-            shutil.move(str(vocals_path), vocals_keep)
-            shutil.move(str(inst_path), inst_keep)
+            t_mss = time.time()
+            if perf_plan["chunk_seconds"] and duration > perf_plan["chunk_seconds"]:
+                progress("mss", 0.05, f"分块分离（{perf_plan['chunks']} 块，"
+                                      f"{perf_plan['chunk_seconds']:.0f}s/块）")
+                _bench_saved = [False]
+
+                def _mss_prog(frac: float, processed: float, rtf: float):
+                    if not _bench_saved[0] and processed >= 60:
+                        mss.save_benchmark(rtf, sep.model_name)
+                        _bench_saved[0] = True
+                    progress("mss", 0.05 + 0.9 * frac,
+                             f"伴奏分离 {processed/60:.1f}/{duration/60:.1f} 分钟 · 实测 RTF {rtf:.2f}")
+
+                try:
+                    mss_meta = sep.separate_chunked(
+                        master, vocals_keep, inst_keep,
+                        perf_plan["chunk_seconds"], perf_plan["overlap_seconds"],
+                        _mss_prog, cancel)
+                except mss.MssCancelled:
+                    raise Cancelled()
+                mss_meta["mode"] = "chunked"
+                mss.save_benchmark(mss_meta["rtf"], sep.model_name)
+            else:
+                progress("mss", 0.15, "分离伴奏与人声（大模型推理，长音频较久）")
+                vocals_path, inst_path = sep.separate(master)
+                shutil.move(str(vocals_path), vocals_keep)
+                shutil.move(str(inst_path), inst_keep)
+                el = max(time.time() - t_mss, 1e-6)
+                mss_meta = {"mode": "single", "elapsed_s": round(el, 1),
+                            "rtf": round(el / max(duration, 1e-6), 3)}
+                mss.save_benchmark(mss_meta["rtf"], sep.model_name)
             if cfg.release_vram and config.get_device().has_nvidia:
                 self.release_mss()
-            progress("mss", 1.0, "完成")
+            progress("mss", 1.0, f"完成（RTF {mss_meta.get('rtf', '—')}）")
 
-        # ---- 分析支线：vocals → 16k 单声道（VAD/声纹/重叠一律用去伴奏后的人声）
+        # ---- 分析支线：vocals → 16k 单声道（流式抽取，不整轨载入再重采样）
         _chk()
         progress("vad", 0.1, "生成 16k 分析副本")
-        voc_x, voc_sr = audio_io.load_audio(vocals_keep)
-        voc16 = audio_io.resample(audio_io.to_mono(voc_x), voc_sr, 16000)
-        del voc_x
+        voc16_path = tmp / "vocals16.wav"
+        audio_io.extract_analysis(vocals_keep, voc16_path, 16000, 1)
+        voc16, _sr16 = audio_io.load_audio(voc16_path)
+        voc16 = np.ascontiguousarray(voc16[:, 0] if voc16.ndim == 2 else voc16)
+        try:
+            voc16_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         progress("vad", 0.4, "Silero VAD 检测语音段")
         vad = self.ensure_vad()
         vad_segs = vad.segments(voc16)
@@ -370,6 +410,8 @@ class Engine:
         } for sid in spk_ids]
         led.qc["elapsed_s"] = round(time.time() - t_start, 1)
         led.qc["rtf"] = round(led.qc["elapsed_s"] / max(duration, 1e-9), 3)
+        led.qc["perf_plan"] = perf_plan
+        led.qc["mss"] = mss_meta
         tl = report.build_timeline(
             {"name": input_path.name, "master_path": str(master),
              "vocals_path": str(vocals_keep), "inst_path": str(inst_keep)},

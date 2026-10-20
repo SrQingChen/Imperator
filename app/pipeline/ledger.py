@@ -9,12 +9,15 @@
 from __future__ import annotations
 
 import math
+import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
 
+from .. import config
 from . import audio_io
 
 CTRL_RATE = 1000
@@ -145,33 +148,49 @@ def _apply_complementary_fades(gains: dict[int, np.ndarray], speech_items: list[
         gains[last["speaker"]][lo:hi] *= (1.0 - _raised_cosine(hi - lo))
 
 
+def _read_block(f: sf.SoundFile, frames: int, ch: int) -> np.ndarray:
+    x = f.read(frames, dtype="float32", always_2d=True)
+    if x.shape[0] < frames:
+        x = np.concatenate([x, np.zeros((frames - x.shape[0], x.shape[1]), "float32")], axis=0)
+    if x.shape[1] != ch:
+        if x.shape[1] == 1:
+            x = np.repeat(x, ch, axis=1)
+        elif ch == 1:
+            x = x.mean(axis=1, keepdims=True)
+        elif x.shape[1] > ch:
+            x = x[:, :ch]
+        else:
+            x = np.pad(x, ((0, 0), (0, ch - x.shape[1])))
+    return x
+
+
 def write_tracks(master_path: Path, vocals_path: Path, inst_path: Path, out_dir: Path,
                  gains_ctrl: dict[int, np.ndarray], speaker_labels: dict[int, str],
                  out_format: str = "float32", out_sr: int | str = 44100,
                  on_progress=None) -> LedgerResult:
-    """流式写盘：逐块读 vocals/master/inst → 插值增益 → 写每条轨 → Σ 断言。
+    """流式写盘：逐块读 master/vocals/inst → 插值增益 → 写每条轨 → Σ 断言。
 
-    RAM 峰值 O(块)，与音频总长无关（>20min 长音频安全）。
+    真正的流式实现：RAM 峰值只与 1 秒块有关，与音频总长无关；
+    非 44.1k 输出用 ffmpeg 逐轨流式重采样，避免整轨载入内存。
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     subtype = _SUBTYPE.get(out_format, "FLOAT")
-
-    mst_x, mst_sr = audio_io.load_audio(master_path)
-    voc_x, sr_in = audio_io.load_audio(vocals_path)
-    inst_x, inst_sr = audio_io.load_audio(inst_path)
-    sr_mismatch = not (sr_in == mst_sr == inst_sr)
-    n = mst_x.shape[0]
-    voc_x, adj_v = audio_io.align_length(voc_x, n)
-    inst_x, adj_i = audio_io.align_length(inst_x, n)
-    duration = n / mst_sr
+    m_info = sf.info(str(master_path))
+    sr, ch, n = m_info.samplerate, m_info.channels, m_info.frames
+    v_info = sf.info(str(vocals_path))
+    i_info = sf.info(str(inst_path))
+    duration = n / sr if sr else 0.0
+    sr_mismatch = not (v_info.samplerate == sr == i_info.samplerate)
+    adj_v = (v_info.frames != n) or (v_info.samplerate != sr) or (v_info.channels != ch)
+    adj_i = (i_info.frames != n) or (i_info.samplerate != sr) or (i_info.channels != ch)
 
     ctrl_times = np.arange(len(next(iter(gains_ctrl.values()))) if gains_ctrl else 1,
                            dtype="float64") / CTRL_RATE
     m0_ctrl = (np.ones(len(ctrl_times), dtype="float32")
                - np.sum([g for g in gains_ctrl.values()], axis=0)) if gains_ctrl else np.ones(1, "float32")
 
-    target_sr = mst_sr if out_sr == "source" else int(out_sr)
-    streaming_ok = target_sr == mst_sr
+    target_sr = sr if out_sr == "source" else int(out_sr)
+    streaming_ok = target_sr == sr
 
     track_specs: list[tuple[str, str]] = []
     for sid in sorted(gains_ctrl):
@@ -183,68 +202,82 @@ def write_tracks(master_path: Path, vocals_path: Path, inst_path: Path, out_dir:
     direct_dir.mkdir(parents=True, exist_ok=True)
     files: dict[str, sf.SoundFile] = {}
     for key, _ in track_specs:
-        files[key] = sf.SoundFile(str(direct_dir / f"{key}.wav"), mode="w", samplerate=mst_sr,
-                                  channels=voc_x.shape[1] if voc_x.ndim == 2 else 1, subtype=subtype)
+        files[key] = sf.SoundFile(str(direct_dir / f"{key}.wav"), mode="w", samplerate=sr,
+                                  channels=ch, subtype=subtype)
 
-    block = int(_BLOCK_S * mst_sr)
+    mf = sf.SoundFile(str(master_path))
+    vf = sf.SoundFile(str(vocals_path))
+    inf = sf.SoundFile(str(inst_path))
+    block = int(_BLOCK_S * sr)
     max_sum_err = 0.0
     energy: dict[str, float] = {k: 0.0 for k, _ in track_specs}
+    master_energy = 0.0
     neg_m0 = 0
-    total_ctrl = len(ctrl_times)
-
     i = 0
-    while i < n:
-        j = min(n, i + block)
-        voc_b = voc_x[i:j]
-        mst_b = mst_x[i:j]
-        inst_b = inst_x[i:j]
-        t = (np.arange(i, j, dtype="float64")) / mst_sr
-        g_spk = {sid: np.interp(t, ctrl_times, g).astype("float32")[:, None]
-                 for sid, g in gains_ctrl.items()}
-        m0 = np.interp(t, ctrl_times, m0_ctrl).astype("float32")
-        neg_m0 += int(np.sum(m0 < -1e-6))
-        acc = np.zeros_like(voc_b, dtype="float32")
-        for sid, g in g_spk.items():
-            key = f"speaker_{sid + 1:02d}"
-            out_b = g * voc_b
-            files[key].write(out_b)
-            acc += out_b
-            energy[key] += float(np.sum(out_b.astype("float64") ** 2))
-        other_b = (m0[:, None] * voc_b).astype("float32")
-        files["other"].write(other_b)
-        acc += other_b
-        energy["other"] += float(np.sum(other_b.astype("float64") ** 2))
-        files["bgm"].write(inst_b)
-        acc += inst_b
-        energy["bgm"] += float(np.sum(inst_b.astype("float64") ** 2))
-        res_b = (mst_b - voc_b - inst_b).astype("float32")
-        files["residual"].write(res_b)
-        acc += res_b
-        energy["residual"] += float(np.sum(res_b.astype("float64") ** 2))
-        max_sum_err = max(max_sum_err, float(np.max(np.abs(acc - mst_b))) if j > i else 0.0)
-        i = j
-        if on_progress:
-            on_progress(i / n)
-    for f_ in files.values():
-        f_.close()
+    try:
+        while i < n:
+            j = min(n, i + block)
+            want = j - i
+            mst_b = _read_block(mf, want, ch)
+            voc_b = _read_block(vf, want, ch)
+            inst_b = _read_block(inf, want, ch)
+            t = (np.arange(i, j, dtype="float64")) / sr
+            g_spk = {sid: np.interp(t, ctrl_times, g).astype("float32")[:, None]
+                     for sid, g in gains_ctrl.items()}
+            m0 = np.interp(t, ctrl_times, m0_ctrl).astype("float32")
+            neg_m0 += int(np.sum(m0 < -1e-6))
+            acc = np.zeros_like(voc_b, dtype="float32")
+            for sid, g in g_spk.items():
+                key = f"speaker_{sid + 1:02d}"
+                out_b = g * voc_b
+                files[key].write(out_b)
+                acc += out_b
+                energy[key] += float(np.sum(out_b.astype("float64") ** 2))
+            other_b = (m0[:, None] * voc_b).astype("float32")
+            files["other"].write(other_b)
+            acc += other_b
+            energy["other"] += float(np.sum(other_b.astype("float64") ** 2))
+            files["bgm"].write(inst_b)
+            acc += inst_b
+            energy["bgm"] += float(np.sum(inst_b.astype("float64") ** 2))
+            res_b = (mst_b - voc_b - inst_b).astype("float32")
+            files["residual"].write(res_b)
+            acc += res_b
+            energy["residual"] += float(np.sum(res_b.astype("float64") ** 2))
+            master_energy += float(np.sum(mst_b.astype("float64") ** 2))
+            max_sum_err = max(max_sum_err, float(np.max(np.abs(acc - mst_b))))
+            i = j
+            if on_progress:
+                on_progress(i / n)
+    finally:
+        for f_ in files.values():
+            try:
+                f_.close()
+            except Exception:
+                pass
+        for f_ in (mf, vf, inf):
+            try:
+                f_.close()
+            except Exception:
+                pass
 
-    # 目标采样率 != 主轴率：全轨同一滤波器最后一步重采样（线性算子，契约不破）
+    # 目标采样率 != 主轴率：全轨同一 ffmpeg 滤波器流式重采样（线性算子，契约不破）
     if not streaming_ok:
         for key, _ in track_specs:
             src = tmp_dir / f"{key}.wav"
-            x, _ = audio_io.load_audio(src)
-            audio_io.save_wav(out_dir / f"{key}.wav", audio_io.resample(x, mst_sr, target_sr),
-                              target_sr, subtype=subtype)
+            audio_io.resample_file(src, out_dir / f"{key}.wav", target_sr, subtype)
             src.unlink(missing_ok=True)
-        tmp_dir.rmdir()
+        try:
+            tmp_dir.rmdir()
+        except OSError:
+            pass
 
     tracks = [{"key": key, "label": label, "file": f"{key}.wav", "kind":
                "speaker" if key.startswith("speaker") else key} for key, label in track_specs]
-    master_energy = float(np.sum(mst_x.astype("float64") ** 2)) + 1e-12
     qc = {
         "sum_max_abs_err": max_sum_err,
         "sum_pass": max_sum_err < 1e-3,
-        "residual_energy_ratio": energy["residual"] / master_energy,
+        "residual_energy_ratio": energy["residual"] / (master_energy + 1e-12),
         "neg_complement_samples": neg_m0,
         "vocals_len_adjusted": bool(adj_v),
         "inst_len_adjusted": bool(adj_i),
@@ -256,21 +289,63 @@ def write_tracks(master_path: Path, vocals_path: Path, inst_path: Path, out_dir:
 
 
 def verify_sum(track_files: list[Path], master_path: Path, sr: int) -> dict:
-    """交付前独立复核：重读全部输出轨，Σ 与 master 比对（只计已知轨道文件）。
-    master 与轨道采样率不一致时，先把 master 重采样到轨道域再比。"""
-    acc: np.ndarray | None = None
+    """独立复核：流式重读全部轨道，Σ 与 master 逐块比对（不整轨载入内存）。"""
+    if not track_files:
+        return {"verify_sum_max_abs_err": None, "pass": False, "error": "无可比对轨道"}
+    infos = []
     for wf in track_files:
         if not wf.exists():
             return {"verify_sum_max_abs_err": None, "pass": False, "error": f"缺轨道 {wf.name}"}
-        x, sr_x = audio_io.load_audio(wf)
-        if sr_x != sr:
-            return {"verify_sum_max_abs_err": None, "pass": False, "error": f"{wf.name} 采样率 {sr_x}≠{sr}"}
-        acc = x if acc is None else acc + x
-    if acc is None:
-        return {"verify_sum_max_abs_err": None, "pass": False, "error": "无可比对轨道"}
-    mst, mst_sr = audio_io.load_audio(master_path)
-    if mst_sr != sr:
-        mst = audio_io.resample(mst, mst_sr, sr)
-    k = min(acc.shape[0], mst.shape[0])
-    err = float(np.max(np.abs(acc[:k] - mst[:k])))
-    return {"verify_sum_max_abs_err": err, "pass": err < 1e-3, "verify_pass": err < 1e-3}
+        inf = sf.info(str(wf))
+        if inf.samplerate != sr:
+            return {"verify_sum_max_abs_err": None, "pass": False,
+                    "error": f"{wf.name} 采样率 {inf.samplerate}≠{sr}"}
+        infos.append(inf)
+    m_info = sf.info(str(master_path))
+    temp = None
+    master_file = Path(master_path)
+    if m_info.samplerate != sr:
+        temp = config.TMP_DIR / f"_verify_master_{os.getpid()}_{int(time.time()*1000)}.wav"
+        audio_io.resample_file(master_path, temp, sr, "FLOAT")
+        master_file = temp
+    readers = [sf.SoundFile(str(f)) for f in track_files]
+    mf = sf.SoundFile(str(master_file))
+    try:
+        m_frames = mf.frames
+        block = int(_BLOCK_S * sr)
+        max_err = 0.0
+        pos = 0
+        while pos < m_frames:
+            want = min(block, m_frames - pos)
+            acc = None
+            for r in readers:
+                b = r.read(want, dtype="float32", always_2d=True)
+                if b.shape[0] < want:
+                    b = np.concatenate([b, np.zeros((want - b.shape[0], b.shape[1]), "float32")], axis=0)
+                acc = b if acc is None else acc + b
+            m = mf.read(want, dtype="float32", always_2d=True)
+            if m.shape[0] < want:
+                m = np.concatenate([m, np.zeros((want - m.shape[0], m.shape[1]), "float32")], axis=0)
+            if acc is not None and acc.shape[1] != m.shape[1]:
+                acc = acc[:, : m.shape[1]] if acc.shape[1] > m.shape[1] else np.pad(
+                    acc, ((0, 0), (0, m.shape[1] - acc.shape[1])))
+            max_err = max(max_err, float(np.max(np.abs(acc - m))))
+            pos += want
+        length_mismatch = any(i.frames != m_frames for i in infos)
+        return {"verify_sum_max_abs_err": max_err, "pass": max_err < 1e-3,
+                "verify_pass": max_err < 1e-3, "length_mismatch": length_mismatch}
+    finally:
+        for r in readers:
+            try:
+                r.close()
+            except Exception:
+                pass
+        try:
+            mf.close()
+        except Exception:
+            pass
+        if temp is not None:
+            try:
+                temp.unlink(missing_ok=True)
+            except OSError:
+                pass

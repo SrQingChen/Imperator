@@ -40,6 +40,25 @@ def extract_master(input_path: str | Path, out_wav: str | Path,
     return out_wav
 
 
+def extract_analysis(input_path: str | Path, out_wav: str | Path,
+                     sr: int = 16000, channels: int = 1) -> Path:
+    """流式生成分析副本（16k 单声道），避免把长音频整段载入内存再重采样。"""
+    out_wav = Path(out_wav)
+    out_wav.parent.mkdir(parents=True, exist_ok=True)
+    run_ffmpeg(["-i", str(input_path), "-vn", "-ac", str(channels), "-ar", str(sr),
+                "-c:a", "pcm_f32le", str(out_wav)])
+    return out_wav
+
+
+def resample_file(src: str | Path, dst: str | Path, sr: int, subtype: str = "FLOAT") -> Path:
+    """用 ffmpeg 流式重采样到目标采样率（同一滤波器可保持多轨求和一致性）。"""
+    dst = Path(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    codec = {"FLOAT": "pcm_f32le", "PCM_16": "pcm_s16le", "PCM_24": "pcm_s24le"}.get(subtype, "pcm_f32le")
+    run_ffmpeg(["-i", str(src), "-vn", "-ar", str(sr), "-c:a", codec, str(dst)])
+    return dst
+
+
 def load_audio(path: str | Path) -> tuple[np.ndarray, int]:
     x, sr = sf.read(str(path), dtype="float32", always_2d=True)
     return x, sr

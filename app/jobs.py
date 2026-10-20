@@ -25,6 +25,23 @@ STAGES: list[tuple[str, str, float]] = [
 _STAGE_KEYS = [s[0] for s in STAGES]
 
 
+def _weights_for_duration(duration_s: float) -> dict:
+    """按素材时长动态分配阶段权重，让进度条与 ETA 更贴近真实耗时。
+
+    长素材的 MSS 是绝对大头；默认的 30% 权重会让进度条在 MSS 阶段几乎不动。
+    """
+    if duration_s >= 1800:
+        w = {"prepare": 1, "extract": 2, "mss": 58, "vad": 1, "embed": 10,
+             "cluster": 3, "overlap": 21, "ledger": 3, "report": 1}
+    elif duration_s >= 600:
+        w = {"prepare": 1, "extract": 3, "mss": 47, "vad": 2, "embed": 12,
+             "cluster": 3, "overlap": 26, "ledger": 4, "report": 2}
+    else:
+        w = {s[0]: s[2] for s in STAGES}
+    total = sum(w.values()) or 1
+    return {k: v / total for k, v in w.items()}
+
+
 @dataclass
 class Job:
     id: str
@@ -42,6 +59,7 @@ class Job:
     started_at: float | None = None
     finished_at: float | None = None
     stage_times: dict = field(default_factory=dict)
+    stage_weights: dict = field(default_factory=dict)
     result: dict | None = None
     _cancel: bool = False
     _stage_t0: float = 0.0
@@ -83,9 +101,15 @@ class JobRunner:
         errs = cfg.validate()
         if errs:
             raise ValueError("参数非法：" + "; ".join(errs))
+        duration = 0.0
+        try:
+            from .pipeline import audio_io
+            duration = audio_io.probe_media(str(input_path)).duration
+        except Exception:
+            pass
         job = Job(id=time.strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6],
                   name=name or Path(input_path).name, input_path=str(input_path),
-                  settings=cfg.to_dict())
+                  settings=cfg.to_dict(), stage_weights=_weights_for_duration(duration))
         with self._lock:
             self._jobs[job.id] = job
             self._order.append(job.id)
@@ -161,7 +185,7 @@ class JobRunner:
         return None
 
     def _progress_of(self, job: Job) -> float:
-        weights = {k: w for k, _, w in STAGES}
+        weights = job.stage_weights or {k: w / 100.0 for k, _, w in STAGES}
         done = sum(weights[k] for k, t in job.stage_times.items() if t.get("done"))
         cur = weights.get(job.stage, 0) * job.stage_frac
         return min(0.999, (done + cur) / sum(weights.values()))

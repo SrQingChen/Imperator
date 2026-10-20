@@ -65,17 +65,16 @@ def test_resample_48k_keeps_identity(trio):
     gains = ledger.build_ctrl_gains(items, [0], n / SR)
     led = ledger.write_tracks(m, v, i, tmp / "out48", gains, {0: "A"}, out_sr=48000)
     assert led.sr_out == 48000
-    ver = ledger.verify_sum([tmp / "out48" / t["file"] for t in led.tracks],
-                            m, 48000)
-    # 48k 轨道与 44.1k master 的比对需重采样 master 后再比；verify_sum 内部按文件 sr 读，
-    # 此处改为显式：Σ(48k 轨) vs resample(master)
+    # 契约复核：Σ 轨道 vs 用同一 ffmpeg 滤波器重采样的 master
+    ver = ledger.verify_sum([tmp / "out48" / t["file"] for t in led.tracks], m, 48000)
+    assert ver["pass"], ver
     acc = None
-    import soundfile as sf2
     for wf in [tmp / "out48" / t["file"] for t in led.tracks]:
         x, _ = audio_io.load_audio(wf)
         acc = x if acc is None else acc + x
-    mst, _ = audio_io.load_audio(m)
-    mst48 = audio_io.resample(mst, SR, 48000)
+    mst48_path = tmp / "master48.wav"
+    audio_io.resample_file(m, mst48_path, 48000, "FLOAT")
+    mst48, _ = audio_io.load_audio(mst48_path)
     k = min(acc.shape[0], mst48.shape[0])
     err = float(np.max(np.abs(acc[:k] - mst48[:k])))
-    assert err < 2e-3, err  # 重采样边缘容差
+    assert err < 2e-3, err
