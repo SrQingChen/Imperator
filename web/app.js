@@ -49,39 +49,116 @@ function pushEvents(evs) {
 
 /* ================= 新建任务 ================= */
 const drop = $("#drop");
-drop.onclick = () => $("#file-input").click();
-$("#file-input").onchange = (e) => { if (e.target.files[0]) $("#submit-hint").textContent = "已选择：" + e.target.files[0].name; };
+const fileInput = $("#file-input");
+
+function fmtSize(n) {
+  if (n == null || !isFinite(n)) return "";
+  if (n < 1024) return n + " B";
+  if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
+  if (n < 1073741824) return (n / 1048576).toFixed(1) + " MB";
+  return (n / 1073741824).toFixed(2) + " GB";
+}
+function setSubmitMsg(text, kind = "") {
+  const el = $("#submit-hint");
+  el.textContent = text || "";
+  el.className = "submit-hint" + (kind ? " " + kind : "");
+}
+function setSelectedFile(file) {
+  if (!file) {
+    fileInput.value = "";
+    drop.classList.remove("has-file");
+    $("#drop-empty").classList.remove("hidden");
+    $("#drop-file").classList.add("hidden");
+    return;
+  }
+  $("#drop-empty").classList.add("hidden");
+  $("#drop-file").classList.remove("hidden");
+  drop.classList.add("has-file");
+  $("#file-name").textContent = file.name;
+  $("#file-size").textContent = `${fmtSize(file.size)} · 已选择，点击「开始分离」开始上传`;
+  setSubmitMsg("");
+}
+function resetSubmitButton() {
+  $("#btn-submit").disabled = false;
+  $("#btn-submit").textContent = "开始分离";
+}
+
+drop.onclick = (e) => {
+  if (e.target.closest("#btn-clear-file")) return;
+  fileInput.click();
+};
+fileInput.onchange = (e) => setSelectedFile((e.target.files || [])[0] || null);
+$("#btn-clear-file").onclick = (e) => {
+  e.stopPropagation();
+  setSelectedFile(null);
+  setSubmitMsg("");
+};
 ["dragover", "dragenter"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
 ["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
 drop.addEventListener("drop", e => {
-  const f = e.dataTransfer.files[0];
-  if (f) { $("#file-input").files = e.dataTransfer.files; $("#submit-hint").textContent = "已选择：" + f.name; }
+  const f = (e.dataTransfer.files || [])[0];
+  if (f) { fileInput.files = e.dataTransfer.files; setSelectedFile(f); }
 });
+$("#path-input").oninput = () => {
+  if ($("#path-input").value.trim()) setSubmitMsg("");
+};
 $("#opt-tau").oninput = (e) => $("#opt-tau-val").textContent = e.target.value;
 
-$("#btn-submit").onclick = async () => {
-  const fd = new FormData();
-  const f = $("#file-input").files[0];
+$("#btn-submit").onclick = () => {
+  const f = (fileInput.files || [])[0];
   const path = $("#path-input").value.trim();
-  if (f) fd.append("file", f);
-  else if (path) fd.append("path", path);
-  else { $("#submit-hint").textContent = "请先选择文件或填写路径"; return; }
+  if (!f && !path) { setSubmitMsg("请先选择文件或填写服务器本地路径", "err"); return; }
+  const fd = new FormData();
+  if (f) fd.append("file", f); else fd.append("path", path);
   const add = (k, v) => { if (v !== "" && v != null) fd.append(k, v); };
   add("tier", $("#opt-tier").value);
   add("outlier_mode", $("#opt-outlier").value);
   const tauBase = String(state.settings.merge_threshold ?? 0.62);
   if ($("#opt-tau").value !== tauBase) add("merge_threshold", $("#opt-tau").value);
-  try {
-    $("#btn-submit").disabled = true;
-    const res = await fetch("/api/jobs", { method: "POST", body: fd });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || "提交失败");
-    $("#submit-hint").textContent = "已提交 ✓";
-    $("#path-input").value = ""; $("#file-input").value = "";
-    setTimeout(() => ($("#submit-hint").textContent = ""), 3000);
-    pollJobs(true);
-  } catch (e) { $("#submit-hint").textContent = "提交失败：" + e.message; }
-  finally { $("#btn-submit").disabled = false; }
+
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/jobs");
+  $("#btn-submit").disabled = true;
+  $("#btn-submit").textContent = f ? "上传中…" : "提交中…";
+  setSubmitMsg(f ? "正在上传文件…" : "正在创建任务…");
+  $("#upload-wrap").classList.toggle("hidden", !f);
+  if (f) {
+    $("#upload-bar").style.width = "0%";
+    $("#upload-text").textContent = "准备上传…";
+  }
+  xhr.upload.onprogress = (e) => {
+    if (!e.lengthComputable) return;
+    const pct = Math.round(e.loaded / e.total * 100);
+    $("#upload-bar").style.width = pct + "%";
+    $("#upload-text").textContent = `上传中 ${pct}% · ${fmtSize(e.loaded)} / ${fmtSize(e.total)}`;
+    $("#btn-submit").textContent = `上传中 ${pct}%`;
+  };
+  xhr.onerror = () => {
+    setSubmitMsg("上传失败：无法连接服务（请确认程序仍在运行）", "err");
+    $("#upload-text").textContent = "上传失败";
+    resetSubmitButton();
+  };
+  xhr.onload = () => {
+    let data = {};
+    try { data = JSON.parse(xhr.responseText || "{}"); } catch (e) {}
+    if (xhr.status >= 200 && xhr.status < 300 && data.job) {
+      if (f) {
+        $("#upload-bar").style.width = "100%";
+        $("#upload-text").textContent = "上传完成，任务已加入队列";
+      }
+      setSelectedFile(null);
+      $("#path-input").value = "";
+      setSubmitMsg(`已加入队列：${data.job.name}（${data.job.id}）`, "ok");
+      pollJobs(true);
+      $("#queue-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
+      setTimeout(() => $("#upload-wrap").classList.add("hidden"), 1500);
+    } else {
+      setSubmitMsg("提交失败：" + (data.detail || xhr.statusText || ("HTTP " + xhr.status)), "err");
+      if (f) $("#upload-text").textContent = "上传未完成";
+    }
+    resetSubmitButton();
+  };
+  xhr.send(fd);
 };
 
 /* ================= 任务列表 ================= */

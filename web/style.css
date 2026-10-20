@@ -73,6 +73,18 @@ button:disabled{opacity:.45;cursor:not-allowed}
   color:var(--muted);cursor:pointer;transition:.15s}
 .drop:hover,.drop.over{border-color:var(--gold2);color:var(--gold);background:#1d1b14}
 .drop input{display:none}
+.drop.has-file{border-style:solid;border-color:var(--gold-dim);background:#1b1a14;padding:14px 16px;
+  text-align:left;color:var(--text)}
+.file-chip{display:flex;align-items:center;gap:12px;width:100%}
+.file-icon{font-size:24px;color:var(--gold);line-height:1}
+.file-meta{flex:1;min-width:0}
+.fname{font-weight:600;color:var(--text);word-break:break-all}
+.mini{padding:4px 10px;font-size:12px}
+#upload-wrap{margin-top:10px}
+.submit-row{align-items:center;margin-top:12px}
+.submit-hint{font-size:12px;color:var(--muted);word-break:break-all}
+.submit-hint.ok{color:var(--ok)}
+.submit-hint.err{color:var(--err)}
 
 /* ---------- 任务列表 ---------- */
 .job{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:10px}

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>英白拉多 Imperator · 智能音轨分离器</title>
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/style.css?v=1.1.0">
 </head>
 <body>
 <header id="topbar">
@@ -35,8 +35,22 @@
       <h2>新建任务</h2>
       <div class="drop" id="drop">
         <input type="file" id="file-input" accept="video/*,audio/*">
-        <p>拖拽视频 / 音频到此处，或点击选择文件</p>
-        <p class="muted">也可以直接填写服务器本地路径</p>
+        <div id="drop-empty">
+          <p>拖拽视频 / 音频到此处，或点击选择文件</p>
+          <p class="muted">也可以直接填写服务器本地路径</p>
+        </div>
+        <div id="drop-file" class="file-chip hidden">
+          <span class="file-icon">▤</span>
+          <div class="file-meta">
+            <div id="file-name" class="fname"></div>
+            <div id="file-size" class="muted"></div>
+          </div>
+          <button id="btn-clear-file" class="mini" type="button">移除</button>
+        </div>
+      </div>
+      <div id="upload-wrap" class="hidden">
+        <div class="pbar"><div id="upload-bar" style="width:0%"></div></div>
+        <p class="muted" id="upload-text" style="margin:6px 0 0"></p>
       </div>
       <div class="row">
         <input id="path-input" placeholder="或输入本地绝对路径，如 E:\videos\talk.mp4" spellcheck="false">
@@ -63,8 +77,10 @@
           <input type="range" id="opt-tau" min="0.3" max="0.95" step="0.01" value="0.62">
         </label>
       </div>
-      <button id="btn-submit" class="primary">开始分离</button>
-      <p class="muted" id="submit-hint"></p>
+      <div class="row submit-row">
+        <button id="btn-submit" class="primary">开始分离</button>
+        <span id="submit-hint" class="submit-hint"></span>
+      </div>
     </div>
 
     <div class="card" id="queue-card">
@@ -286,6 +302,6 @@
 </main>
 
 <footer>英白拉多 Imperator · GPL-3.0 · SrQingChen</footer>
-<script src="/app.js"></script>
+<script src="/app.js?v=1.1.0"></script>
 </body>
 </html>
