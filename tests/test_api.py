@@ -77,3 +77,20 @@ def test_voiceprint_crud(client):
     assert client.patch(f"/api/voiceprints/{vid}", json={"name": "改名"}).status_code == 200
     assert client.delete(f"/api/voiceprints/{vid}").status_code == 200
     assert client.get("/api/voiceprints").json()["voiceprints"] == []
+
+
+def test_export_endpoints_validation(client):
+    assert client.get("/api/exports/nope").status_code == 404
+    assert client.post("/api/jobs/nope/exports/plan", json={"track": "speaker_01"}).status_code == 404
+    assert client.post("/api/jobs/nope/exports", json={"track": "speaker_01"}).status_code == 404
+    assert client.get("/api/jobs/nope/source").status_code == 404
+    assert client.get("/api/jobs/nope/exports").status_code == 404
+    assert client.post("/api/exports/nope/cancel").status_code == 400
+    assert client.delete("/api/exports/nope").status_code == 400
+
+
+def test_export_page_served(client):
+    r = client.get("/export.html")
+    assert r.status_code == 200
+    assert "导出片段" in r.text
+    assert client.get("/export.js").status_code == 200

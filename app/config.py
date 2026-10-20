@@ -45,6 +45,8 @@ class DeviceInfo:
     has_nvidia: bool = False
     ffmpeg_path: str = ""
     ffmpeg_source: str = ""
+    ffprobe_path: str = ""
+    ffprobe_source: str = ""
     notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -52,6 +54,7 @@ class DeviceInfo:
             "python": self.python, "os": self.os, "cpu": self.cpu, "cpu_cores": self.cpu_cores,
             "ram_total_mb": self.ram_total_mb, "gpu_name": self.gpu_name, "gpu_vram_mb": self.gpu_vram_mb,
             "has_nvidia": self.has_nvidia, "ffmpeg_path": self.ffmpeg_path, "ffmpeg_source": self.ffmpeg_source,
+            "ffprobe_path": self.ffprobe_path, "ffprobe_source": self.ffprobe_source,
             "notes": self.notes,
         }
 
@@ -83,6 +86,21 @@ def _find_ffmpeg() -> tuple[str, str]:
         return "", "missing"
 
 
+def _find_ffprobe(ffmpeg_path: str) -> tuple[str, str]:
+    """ffprobe：系统 PATH → ffmpeg 同目录（gyan/BtbN 构建自带）→ 缺失。
+    imageio-ffmpeg 只带 ffmpeg，不带 ffprobe，故最后留空由上层解析 ffmpeg -i 兜底。"""
+    p = shutil.which("ffprobe")
+    if p:
+        return p, "system"
+    if ffmpeg_path:
+        base = Path(ffmpeg_path)
+        for name in ("ffprobe.exe", "ffprobe"):
+            cand = base.with_name(name)
+            if cand.exists():
+                return str(cand), "ffmpeg-dir"
+    return "", "missing"
+
+
 _DEVICE: DeviceInfo | None = None
 
 
@@ -96,6 +114,7 @@ def get_device() -> DeviceInfo:
 
     name, vram = _probe_gpu()
     ff, ff_src = _find_ffmpeg()
+    fp, fp_src = _find_ffprobe(ff)
     vm = psutil.virtual_memory()
     info = DeviceInfo(
         python=_sys.version.split()[0],
@@ -105,6 +124,7 @@ def get_device() -> DeviceInfo:
         ram_total_mb=int(vm.total / 1024 / 1024),
         gpu_name=name, gpu_vram_mb=vram, has_nvidia=bool(name),
         ffmpeg_path=ff, ffmpeg_source=ff_src,
+        ffprobe_path=fp, ffprobe_source=fp_src,
     )
     if not name:
         info.notes.append("未检测到 NVIDIA GPU，将使用 CPU 模式（建议选择轻量 MSS 档位）")

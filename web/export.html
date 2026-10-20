@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>导出片段 · 英白拉多 Imperator</title>
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+<style>
+  .export-main{max-width:1100px;margin:0 auto;padding:20px 24px}
+  .export-main .grid-2{align-items:start}
+  .back{color:var(--muted);font-size:13px}
+  .track-audio{width:100%;margin-top:8px;height:36px}
+  .clip-list{max-height:320px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;margin:8px 0}
+  .clip{display:flex;align-items:center;gap:10px;padding:7px 12px;border-bottom:1px solid var(--line);
+        font-size:13px;cursor:pointer}
+  .clip:last-child{border-bottom:none}
+  .clip:hover{background:var(--card2)}
+  .clip.off{opacity:.45}
+  .clip input{width:auto}
+  .clip .time{font-family:Consolas,monospace;color:var(--gold)}
+  .clip .dur{color:var(--muted);margin-left:auto}
+  .radio-row{display:flex;gap:10px;flex-wrap:wrap;margin:6px 0 12px}
+  .radio-card{flex:1;min-width:180px;border:1px solid var(--line2);border-radius:8px;padding:10px 12px;
+              cursor:pointer;background:var(--bg2)}
+  .radio-card input{width:auto;margin-right:6px}
+  .radio-card.on{border-color:var(--gold2);box-shadow:inset 0 0 0 1px var(--gold-dim)}
+  .radio-card .t{font-weight:600;color:var(--text)}
+  .radio-card .d{font-size:12px;color:var(--muted);margin-top:4px}
+  .status{margin-top:12px}
+  .status .pbar{margin:8px 0}
+  .result-media{width:100%;max-height:420px;margin-top:10px;background:#000;border-radius:8px}
+  .err{color:var(--err);white-space:pre-wrap;word-break:break-all}
+  .okline{color:var(--ok)}
+  .hint{color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+<header id="topbar">
+  <div class="brand">
+    <img src="/icon.svg" alt="" class="logo">
+    <div>
+      <h1>导出片段 <span class="latin">EXPORT</span></h1>
+      <p class="tagline" id="job-title">加载中…</p>
+    </div>
+  </div>
+  <nav style="flex:1;text-align:right">
+    <a class="back" href="/" target="_self">← 返回任务页</a>
+    <a class="back" href="javascript:window.close()" style="margin-left:16px">关闭本页</a>
+  </nav>
+</header>
+
+<main class="export-main">
+  <div id="fatal" class="card hidden"><p class="err" id="fatal-msg"></p></div>
+
+  <section class="card">
+    <h2>1 · 选择并试听音轨</h2>
+    <div class="row">
+      <select id="track-select" style="max-width:360px"></select>
+      <span class="muted" id="track-meta"></span>
+    </div>
+    <audio id="track-audio" class="track-audio" controls preload="metadata"></audio>
+    <p class="hint" id="track-hint"></p>
+  </section>
+
+  <div class="grid-2">
+    <section class="card">
+      <h2>2 · 片段检测参数</h2>
+      <div class="form-grid">
+        <label>能量阈值（dBFS）
+          <input type="number" id="p-threshold_db" step="1" min="-90" max="0">
+        </label>
+        <label>相对阈值（低于 95 分位 N dB 视为静音）
+          <input type="number" id="p-rel_db" step="1" min="-60" max="0">
+        </label>
+        <label>合并间隔（秒）
+          <input type="number" id="p-merge_gap" step="0.05" min="0" max="10">
+        </label>
+        <label>最短片段（秒）
+          <input type="number" id="p-min_clip" step="0.1" min="0.1" max="60">
+        </label>
+        <label>前留白（秒）
+          <input type="number" id="p-pad_before" step="0.05" min="0" max="10">
+        </label>
+        <label>后留白（秒）
+          <input type="number" id="p-pad_after" step="0.05" min="0" max="10">
+        </label>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button id="btn-plan">重新分析</button>
+        <span class="hint" id="plan-hint"></span>
+      </div>
+      <div id="plan-summary" class="hint"></div>
+    </section>
+
+    <section class="card">
+      <h2>3 · 输出类型</h2>
+      <div class="radio-row" id="kind-row">
+        <label class="radio-card on" id="kind-video-card">
+          <span><input type="radio" name="output_kind" value="video" checked>
+          <span class="t">视频 MP4</span></span>
+          <div class="d">切出片段并拼接成成片</div>
+        </label>
+        <label class="radio-card" id="kind-audio-card">
+          <span><input type="radio" name="output_kind" value="audio">
+          <span class="t">仅音频</span></span>
+          <div class="d">不导出画面，纯音轨文件</div>
+        </label>
+      </div>
+
+      <div id="video-opts">
+        <h3>视频中的音频来源</h3>
+        <div class="radio-row">
+          <label class="radio-card on" id="mode-clean-card">
+            <span><input type="radio" name="audio_mode" value="clean" checked>
+            <span class="t">使用分离音轨</span></span>
+            <div class="d">只保留所选说话人的干净声音</div>
+          </label>
+          <label class="radio-card" id="mode-original-card">
+            <span><input type="radio" name="audio_mode" value="original">
+            <span class="t">保留原视频音频</span></span>
+            <div class="d">保留原始混音（含其他人/BGM）</div>
+          </label>
+        </div>
+      </div>
+
+      <div id="audio-opts" class="hidden">
+        <h3>音频范围</h3>
+        <div class="radio-row">
+          <label class="radio-card on" id="scope-clips-card">
+            <span><input type="radio" name="audio_scope" value="clips" checked>
+            <span class="t">只保留有声音片段</span></span>
+            <div class="d">按第 4 步勾选的片段拼接</div>
+          </label>
+          <label class="radio-card" id="scope-full-card">
+            <span><input type="radio" name="audio_scope" value="full">
+            <span class="t">完整音轨</span></span>
+            <div class="d">与源等长，无人声处静音</div>
+          </label>
+        </div>
+        <label>音频格式
+          <select id="p-audio_format">
+            <option value="wav">WAV（无损，默认）</option>
+            <option value="mp3">MP3 192k</option>
+            <option value="m4a">M4A / AAC 192k</option>
+            <option value="flac">FLAC（无损压缩）</option>
+          </select>
+        </label>
+      </div>
+    </section>
+  </div>
+
+  <section class="card">
+    <h2>4 · 确认片段 <span class="muted" id="clip-stats"></span></h2>
+    <p class="hint" id="clip-hint">取消勾选误检片段；只有勾选的片段会被导出。</p>
+    <div class="clip-list" id="clip-list"><p class="muted" style="padding:12px">分析中…</p></div>
+    <div class="row">
+      <button id="btn-all">全选</button>
+      <button id="btn-none">全不选</button>
+      <span style="flex:1"></span>
+      <button id="btn-generate" class="primary">开始导出</button>
+    </div>
+    <div class="status" id="export-status"></div>
+    <div id="export-result"></div>
+  </section>
+
+  <section class="card" id="source-card">
+    <h2>原视频预览</h2>
+    <video id="source-video" class="result-media" controls preload="metadata"></video>
+    <p class="hint" id="source-hint"></p>
+  </section>
+</main>
+<footer>英白拉多 Imperator · 导出不会修改原始任务与音轨</footer>
+<script src="/export.js"></script>
+</body>
+</html>

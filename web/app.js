@@ -191,10 +191,18 @@ function renderTracks(result, jid) {
       <audio controls preload="none" src="/outputs/${jid}/${t.file}" ${t.key === "residual" || t.key === "other" ? "volume=\"0\"" : ""}></audio>
       <div class="tctl">
         <button onclick="soloTrack('${t.key}')">solo</button>
+        ${t.key !== "residual" ? `
+          <button onclick="openExport('${jid}','${t.key}','video')" title="把该音轨有声音的片段切成视频">切视频</button>
+          <button onclick="openExport('${jid}','${t.key}','audio')" title="只导出该音轨的音频">切音频</button>` : ""}
         <a class="btn" href="/outputs/${jid}/${t.file}" download>下载</a>
       </div>
     </div>`).join("");
 }
+
+window.openExport = (jid, key, kind) => {
+  const url = `/export.html?job=${encodeURIComponent(jid)}&track=${encodeURIComponent(key)}&kind=${kind || "video"}`;
+  window.open(url, "_blank");
+};
 
 window.soloTrack = (key) => {
   state.solo = state.solo === key ? null : key;

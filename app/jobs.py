@@ -97,6 +97,16 @@ class JobRunner:
         with self._lock:
             return self._jobs.get(jid)
 
+    def lock_for(self, jid: str) -> threading.RLock:
+        """任务级锁：修正重渲染与导出读取同一批 WAV 时互斥。"""
+        with self._lock:
+            return self._corr_locks.setdefault(jid, threading.RLock())
+
+    def has_active(self) -> bool:
+        """是否有分离任务正在运行（导出队列据此避让，避免抢 CPU）。"""
+        with self._lock:
+            return any(j.status == "running" for j in self._jobs.values())
+
     def list_jobs(self) -> list[Job]:
         with self._lock:
             return [self._jobs[i] for i in self._order]
@@ -218,7 +228,7 @@ class JobRunner:
         if not tl_path.exists():
             raise FileNotFoundError("timeline.json 缺失")
         with self._lock:
-            lock = self._corr_locks.setdefault(jid, threading.RLock())
+            lock = self.lock_for(jid)
         with lock:  # 同一任务的修正重渲染互斥（并发写 WAV 会损坏轨道）
             def progress(stage, frac, note=""):
                 pass

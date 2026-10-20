@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import shutil
 import threading
@@ -12,7 +13,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import (config, env_manager, events, jobs, models_manager, monitor, network,
+from . import (config, env_manager, events, exports, jobs, models_manager, monitor, network,
                settings as settings_mod, voiceprint)
 
 _OK_FIELDS = {"tier", "merge_threshold", "outlier_mode", "outlier_ratio_percent",
@@ -24,15 +25,17 @@ def create_app() -> FastAPI:
     perf = monitor.PerfMonitor()
     engine = None
     runner: jobs.JobRunner | None = None
+    exports_runner: exports.ExportRunner | None = None
 
     @app.on_event("startup")
     def _startup() -> None:
-        nonlocal engine, runner
+        nonlocal engine, runner, exports_runner
         os.chdir(config.DATA_DIR)  # clearvoice 以 CWD 相对路径管理 checkpoints
         perf.start()
         from .pipeline.engine import Engine
         engine = Engine()
         runner = jobs.JobRunner(engine)
+        exports_runner = exports.ExportRunner(runner)
         events.success(f"英白拉多 Imperator 已启动（数据目录 {config.DATA_DIR}）", scope="server")
         threading.Thread(target=network.get_plan, daemon=True).start()
         dev = config.get_device()
@@ -144,6 +147,12 @@ def create_app() -> FastAPI:
 
     @app.delete("/api/jobs/{jid}")
     def delete_job(jid: str):
+        job = runner.get(jid)
+        if job is None:
+            raise HTTPException(404, "任务不存在")
+        if exports_runner.has_active_for(jid):
+            raise HTTPException(409, "该任务还有导出在进行，请先取消或等待完成")
+        exports_runner.delete_for_job(jid)
         if not runner.delete(jid):
             raise HTTPException(400, "无法删除（运行中或不存在）")
         return {"ok": True}
@@ -172,6 +181,78 @@ def create_app() -> FastAPI:
         if not p.exists():
             raise HTTPException(404, "无报告")
         return FileResponse(p, media_type="text/html")
+
+    # ------------------------------------------------ 视频/音频导出
+    def _done_job(jid: str):
+        job = runner.get(jid)
+        if job is None:
+            raise HTTPException(404, "任务不存在")
+        if job.status != "done":
+            raise HTTPException(400, "任务尚未完成，无法导出")
+        return job
+
+    @app.post("/api/jobs/{jid}/exports/plan")
+    def export_plan(jid: str, body: dict):
+        job = _done_job(jid)
+        try:
+            with runner.lock_for(jid):
+                plan = exports.plan_for_job(Path(job.job_dir), Path(job.input_path), body)
+        except FileNotFoundError as e:
+            raise HTTPException(400, str(e))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except RuntimeError as e:
+            raise HTTPException(400, str(e))
+        return {"ok": True, "plan": plan}
+
+    @app.post("/api/jobs/{jid}/exports")
+    def create_export(jid: str, body: dict):
+        job = _done_job(jid)
+        try:
+            task = exports_runner.create(job, body)
+        except FileNotFoundError as e:
+            raise HTTPException(400, str(e))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except RuntimeError as e:
+            raise HTTPException(400, str(e))
+        return {"ok": True, "export": task.to_dict()}
+
+    @app.get("/api/jobs/{jid}/exports")
+    def list_exports(jid: str):
+        if runner.get(jid) is None:
+            raise HTTPException(404, "任务不存在")
+        return {"exports": [t.to_dict() for t in exports_runner.list(jid)]}
+
+    @app.get("/api/exports/{eid}")
+    def get_export(eid: str):
+        t = exports_runner.get(eid)
+        if t is None:
+            raise HTTPException(404, "导出任务不存在")
+        return t.to_dict(full=True)
+
+    @app.post("/api/exports/{eid}/cancel")
+    def cancel_export(eid: str):
+        if not exports_runner.cancel(eid):
+            raise HTTPException(400, "无法取消（不存在或不在运行）")
+        return {"ok": True}
+
+    @app.delete("/api/exports/{eid}")
+    def delete_export(eid: str):
+        if not exports_runner.delete(eid):
+            raise HTTPException(400, "无法删除（不存在或正在运行）")
+        return {"ok": True}
+
+    @app.get("/api/jobs/{jid}/source")
+    def job_source(jid: str):
+        job = runner.get(jid)
+        if job is None:
+            raise HTTPException(404, "任务不存在")
+        p = Path(job.input_path)
+        if not p.exists():
+            raise HTTPException(404, "原始文件不存在（可能已被移动或删除）")
+        mt = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
+        return FileResponse(p, media_type=mt)
 
     # ------------------------------------------------ 环境 / 模型 / 网络
     @app.get("/api/env")
